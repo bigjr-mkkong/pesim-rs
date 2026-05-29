@@ -1,0 +1,15 @@
+This project use DRAMsim3 as its memory timing simulator
+
+Perform following command:
+
+```
+git clone git@github.com:bigjr-mkkong/DRAMsim3.git
+cd DRAMsim3/
+git checkout dramsim3-rustext
+mkdir build
+cd build
+cmake ..
+make -j$(nproc)
+```
+to setup memory simulator
+

@@ -1,0 +1,41 @@
+Hardware Resouces:
+8 128-bit vector RF(vRF)
+8 fatptr RF(ptr_RF)
+
+Instructions:
+NOP => NOP
+ADD128  A, B, C             => vRF[A] = vRF[B] + vRF[C]
+SUB128  A, B, C             => vRF[A] = vRF[B] - vRF[C]
+MUL128  A, B, C             => vRF[A] = vRF[B] * vRF[C](truncat)
+AND128  A, B, C             => vRF[A] = vRF[B] & vRF[C]
+LD128   A, X                => vRF[A] = *ptr_RF[X]
+ST128   A, X                => *ptr_RF[X] = vRF[A]
+FatPtrLd X, Y               => ptr_RF[X] = *ptr_RF[Y]
+FatPtrSt X, Y               => *ptr_RF[Y] = ptr_RF[X]
+FatPtrAdd X, A, #idx        => ptr_RF[X] = ptr_RF[X] + RF[A][#idx]
+FatPtrSub X, A, #idx        => ptr_RF[X] = ptr_RF[X] - RF[A][#idx]
+Jump #addr                  => pc = #addr
+EqualExit A, B              => if(vRF[A] == vRF[B]) exit
+
+
+Format:
+ 4   |    3      |      3     |   3    |  3   | 
+--------------------------------------------------
+[OP] |[rd]       |[rs1]       |[rs2]   |      | //ADD128, SUB128, MUL128, AND128
+[OP] |[rd]       |[frs]       |        |      | //LD128
+[OP] |[rs]       |[frd]       |        |      | //ST128
+[OP] |[frd]      |[frs]       |        |      | //FatPtrLd, FatPtrSt
+[OP] |[frd]      |[frs]       |[rs1]   |[#idx]| //FatPtrAdd, FatPtrSub
+[OP] |[#inst-addr]                                 | //Jump
+[OP] |[rs1]      |[rs2]       |        |      | //EqualExit
+
+
+fptr:
+4       28
+[idx] [offset]
+offset is in granularit of 128bits
+
+Pipeline:
+IF -> ID -> EX -> AGU -> MEM -> WB
+
+AGU stand for Address Generation Unit
