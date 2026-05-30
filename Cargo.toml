@@ -5,6 +5,7 @@ edition = "2024"
 
 [dependencies]
 cxx = "1.0.194"
+rustc-hash = "2.1.2"
 
 [build-dependencies]
 cxx-build = "1.0.194"

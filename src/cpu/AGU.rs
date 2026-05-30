@@ -3,6 +3,9 @@ use crate::cpu::pipeline::CPU;
 
 use crate::cpu::EX::EX_AGU_rf;
 use crate::cpu::signal_scoreboard::{SigFSM, pipeline_action, signal_reason, signal_req};
+use crate::memory::AGU_unit::AGU_unit;
+
+use std::collections::{HashSet, HashMap};
 
 pub struct AGU_MEM_rf {
     valid: bool,
@@ -56,7 +59,7 @@ impl AGU_MEM_rf {
 }
 
 impl CPU {
-    fn eval_AGU(ex_agu_rf: &EX_AGU_rf) -> (AGU_MEM_rf, signal_req, Vec<arch_action>) {
+    fn eval_AGU(ex_agu_rf: &EX_AGU_rf, agu: &AGU_unit) -> (AGU_MEM_rf, signal_req, Vec<arch_action>) {
         if !ex_agu_rf.is_valid() {
             (
                 AGU_MEM_rf {
@@ -68,7 +71,7 @@ impl CPU {
                     dma_op: DMAop::NOP,
                     wb_op: WBop::NOP,
                 },
-                signal_req::new(signal_reason::no_reason, CPU_stages::ID, None),
+                signal_req::new(signal_reason::no_reason, CPU_stages::AGU, None),
                 [arch_action::DoNothing].to_vec(),
             )
         } else {
@@ -83,32 +86,191 @@ impl CPU {
                         dma_op: DMAop::NOP,
                         wb_op: WBop::NOP,
                     },
-                    signal_req::new(signal_reason::no_reason, CPU_stages::ID, None),
+                    signal_req::new(signal_reason::no_reason, CPU_stages::AGU, None),
                     [arch_action::DoNothing].to_vec(),
                 ),
-                /*
-                 * TODO:
-                 * Need to implement AGU unit first
-                 * Implement another AGU_unit.rs in memory/
-                 */
                 AGUop::CHK { fptr_lit } => {
-                    todo!()
+                    if agu.accept(fptr_lit) {
+                        (
+                            AGU_MEM_rf {
+                                valid: true,
+                                flush: false,
+                                phys_addr: agu.translate(fptr_lit),
+                                arith_in: ex_agu_rf.get_arith_result(),
+                                ptr_result: None,
+                                dma_op: ex_agu_rf.get_dma_op(),
+                                wb_op: ex_agu_rf.get_wb_op(),
+                            },
+                            signal_req::new(signal_reason::no_reason, CPU_stages::AGU, None),
+                            [arch_action::DoNothing].to_vec(),
+
+                        )
+                    } else {
+                        (
+                            AGU_MEM_rf {
+                                valid: false,
+                                flush: false,
+                                phys_addr: None,
+                                arith_in: None,
+                                ptr_result: None,
+                                dma_op: DMAop::NOP,
+                                wb_op: WBop::NOP,
+                            },
+                            signal_req::new(signal_reason::exception, CPU_stages::AGU, 
+                                Some(HashSet::<CPU_stages>::from([
+                                        CPU_stages::IF,
+                                        CPU_stages::ID,
+                                        CPU_stages::EX]))),
+                            [arch_action::HoldPC].to_vec(),
+
+                        )
+
+                    }
                 }
                 AGUop::ADD {
                     fptr_lit,
                     rs1_lit,
                     idx_imm,
                 } => {
-                    todo!()
+                    let fptr_ = agu.addition(fptr_lit, rs1_lit, idx_imm);
+                    if let Some(new_fptr) = fptr_ {
+                        (
+                            AGU_MEM_rf {
+                                valid: true,
+                                flush: false,
+                                phys_addr: None,
+                                arith_in: ex_agu_rf.get_arith_result(),
+                                ptr_result: Some(new_fptr),
+                                dma_op: ex_agu_rf.get_dma_op(),
+                                wb_op: ex_agu_rf.get_wb_op(),
+                            },
+                            signal_req::new(signal_reason::no_reason, CPU_stages::AGU, None),
+                            [arch_action::DoNothing].to_vec(),
+
+                        )
+                    } else {
+                        (
+                            AGU_MEM_rf {
+                                valid: false,
+                                flush: false,
+                                phys_addr: None,
+                                arith_in: None,
+                                ptr_result: None,
+                                dma_op: DMAop::NOP,
+                                wb_op: WBop::NOP,
+                            },
+                            signal_req::new(signal_reason::exception, CPU_stages::AGU, 
+                                Some(HashSet::<CPU_stages>::from([
+                                         CPU_stages::IF, CPU_stages::ID,
+                                        CPU_stages::EX]))),
+                            [arch_action::HoldPC].to_vec(),
+
+                        )
+
+                    }
                 }
                 AGUop::SUB {
                     fptr_lit,
                     rs1_lit,
                     idx_imm,
                 } => {
-                    todo!()
+                    let fptr_ = agu.subtraction(fptr_lit, rs1_lit, idx_imm);
+                    if let Some(new_fptr) = fptr_ {
+                        (
+                            AGU_MEM_rf {
+                                valid: true,
+                                flush: false,
+                                phys_addr: None,
+                                arith_in: ex_agu_rf.get_arith_result(),
+                                ptr_result: Some(new_fptr),
+                                dma_op: ex_agu_rf.get_dma_op(),
+                                wb_op: ex_agu_rf.get_wb_op(),
+                            },
+                            signal_req::new(signal_reason::no_reason, CPU_stages::AGU, None),
+                            [arch_action::DoNothing].to_vec(),
+
+                        )
+                    } else {
+                        (
+                            AGU_MEM_rf {
+                                valid: false,
+                                flush: false,
+                                phys_addr: None,
+                                arith_in: None,
+                                ptr_result: None,
+                                dma_op: DMAop::NOP,
+                                wb_op: WBop::NOP,
+                            },
+                            signal_req::new(signal_reason::exception, CPU_stages::AGU, 
+                                Some(HashSet::<CPU_stages>::from([
+                                         CPU_stages::IF, CPU_stages::ID,
+                                        CPU_stages::EX]))),
+                            [arch_action::HoldPC].to_vec(),
+
+                        )
+
+                    }
                 }
             }
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+enum AGU_stop_FSM_states{
+    Drain_WB,
+    Drain_MEM,
+    Idle
+}
+
+#[derive(Clone, Copy)]
+struct AGU_stop_FSM{
+    state: AGU_stop_FSM_states,
+    state_next: AGU_stop_FSM_states
+}
+
+impl SigFSM for AGU_stop_FSM {
+    fn reason(&self) -> signal_reason {
+        signal_reason::exception
+    }
+
+    //action should return Normal when reaching the finish state
+    fn action(&self) -> pipeline_action {
+        match self.state {
+            AGU_stop_FSM_states::Drain_WB => pipeline_action::Flush,
+            AGU_stop_FSM_states::Drain_MEM => pipeline_action::Flush,
+            AGU_stop_FSM_states::Idle => pipeline_action::Normal
+        }
+    }
+
+    fn get_ops(&self) -> HashMap<CPU_stages, pipeline_action> {
+        HashMap::<CPU_stages, pipeline_action>::from([
+            (CPU_stages::IF, pipeline_action::Flush), //flush ifid
+            (CPU_stages::ID, pipeline_action::Flush), //flush idex
+            (CPU_stages::EX, pipeline_action::Flush), //flush exagu
+        ])
+    }
+
+    fn advance_winner(&mut self) -> bool {
+        self.state_next = match self.state {
+            AGU_stop_FSM_states::Drain_WB => AGU_stop_FSM_states::Drain_MEM,
+            AGU_stop_FSM_states::Drain_MEM => AGU_stop_FSM_states::Idle,
+            AGU_stop_FSM_states::Idle => AGU_stop_FSM_states::Idle
+
+        };
+
+        self.state = self.state_next;
+        return true;
+    }
+
+    fn handle_blocked(&mut self) {}
+}
+
+impl AGU_stop_FSM {
+    pub const fn new() -> Self {
+        Self {
+            state: AGU_stop_FSM_states::Drain_WB,
+            state_next: AGU_stop_FSM_states::Drain_MEM,
         }
     }
 }

@@ -6,6 +6,13 @@ pub struct fatptr_rf {
 }
 
 impl fatptr_rf {
+    pub const fn new(tag_: u8, offset_: u32) -> Self{
+        Self{
+            tag: tag_,
+            offset: offset_
+        }
+    }
+
     pub fn get_idx(&self) -> u8 {
         crate::check_bound!(self.tag, IDX_BITS)
     }
@@ -169,10 +176,15 @@ pub enum WBop {
     WB_FPTR { frd: u8 },
 }
 
+/*
+ * TODO
+ * HoldPC will not change current PC, some previous DoNothing arch_action should be it
+ */
 #[derive(Clone, Copy)]
 pub enum arch_action {
     DoNothing,
     WritePC { new_pc: u16 },
+    HoldPC,
     WriteVRF { rd: u16, content: [u32; 4] },
     WriteFPTR { frd: u16, content: fatptr_rf },
     WriteMEM { addr: u32, content: [u32; 4] },

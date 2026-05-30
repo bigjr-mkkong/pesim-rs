@@ -1,3 +1,6 @@
 /target
 /output
 /third-party/DRAMsim3
+**/target
+Cargo.lock
+

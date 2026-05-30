@@ -62,7 +62,7 @@ impl CPU {
                     dma_op: DMAop::NOP,
                     wb_op: WBop::NOP,
                 },
-                signal_req::new(signal_reason::no_reason, CPU_stages::ID, None),
+                signal_req::new(signal_reason::no_reason, CPU_stages::EX, None),
                 [arch_action::DoNothing].to_vec(),
             )
         } else {
@@ -76,7 +76,7 @@ impl CPU {
                         dma_op: DMAop::NOP,
                         wb_op: WBop::NOP,
                     },
-                    signal_req::new(signal_reason::no_reason, CPU_stages::ID, None),
+                    signal_req::new(signal_reason::no_reason, CPU_stages::EX, None),
                     [arch_action::DoNothing].to_vec(),
                 ),
                 ALUop::ADD { rs1_lit, rs2_lit } => {
@@ -95,7 +95,7 @@ impl CPU {
                             dma_op: idex_rf.get_dma_op(),
                             wb_op: idex_rf.get_wb_op(),
                         },
-                        signal_req::new(signal_reason::no_reason, CPU_stages::ID, None),
+                        signal_req::new(signal_reason::no_reason, CPU_stages::EX, None),
                         [arch_action::DoNothing].to_vec(),
                     )
                 }
@@ -115,7 +115,7 @@ impl CPU {
                             dma_op: idex_rf.get_dma_op(),
                             wb_op: idex_rf.get_wb_op(),
                         },
-                        signal_req::new(signal_reason::no_reason, CPU_stages::ID, None),
+                        signal_req::new(signal_reason::no_reason, CPU_stages::EX, None),
                         [arch_action::DoNothing].to_vec(),
                     )
                 }
@@ -135,7 +135,7 @@ impl CPU {
                             dma_op: idex_rf.get_dma_op(),
                             wb_op: idex_rf.get_wb_op(),
                         },
-                        signal_req::new(signal_reason::no_reason, CPU_stages::ID, None),
+                        signal_req::new(signal_reason::no_reason, CPU_stages::EX, None),
                         [arch_action::DoNothing].to_vec(),
                     )
                 }
@@ -155,7 +155,7 @@ impl CPU {
                             dma_op: idex_rf.get_dma_op(),
                             wb_op: idex_rf.get_wb_op(),
                         },
-                        signal_req::new(signal_reason::no_reason, CPU_stages::ID, None),
+                        signal_req::new(signal_reason::no_reason, CPU_stages::EX, None),
                         [arch_action::DoNothing].to_vec(),
                     )
                 }
@@ -176,8 +176,10 @@ impl CPU {
                                 dma_op: DMAop::NOP,
                                 wb_op: WBop::NOP,
                             },
-                            signal_req::new(signal_reason::no_reason, CPU_stages::ID, None),
-                            [arch_action::DoNothing].to_vec(),
+                            signal_req::new(signal_reason::no_reason, CPU_stages::EX, 
+                                Some(HashSet::<CPU_stages>::from([
+                                         CPU_stages::IF, CPU_stages::ID]))),
+                            [arch_action::HoldPC].to_vec(),
                         )
                     } else {
                         (
@@ -194,7 +196,7 @@ impl CPU {
                                 CPU_stages::EX,
                                 Some(HashSet::<CPU_stages>::from([
                                     CPU_stages::IF,
-                                    CPU_stages::ID,
+                                    CPU_stages::EX,
                                 ])),
                             ),
                             [arch_action::DoNothing].to_vec(),
@@ -208,8 +210,9 @@ impl CPU {
 
 #[derive(Clone, Copy)]
 enum EX_stop_FSM_states {
-    Drain_WB,  //flush on-flying WB
-    Drain_MEM, //flush on-flying MEM
+    Drain_WB,  //drain on-flying WB
+    Drain_AGU, //drain on-flying AGU
+    Drain_MEM, //drain on-flying MEM
     IDLE,
 }
 
@@ -229,22 +232,25 @@ impl SigFSM for EX_stop_FSM {
         match self.state {
             EX_stop_FSM_states::Drain_WB => pipeline_action::Flush,
             EX_stop_FSM_states::Drain_MEM => pipeline_action::Flush,
-            _ => pipeline_action::Normal,
+            EX_stop_FSM_states::Drain_AGU => pipeline_action::Flush,
+            EX_stop_FSM_states::IDLE => pipeline_action::Normal
         }
     }
 
     fn get_ops(&self) -> HashMap<CPU_stages, pipeline_action> {
         HashMap::<CPU_stages, pipeline_action>::from([
-            (CPU_stages::IF, pipeline_action::Flush),
-            (CPU_stages::ID, pipeline_action::Flush),
+            (CPU_stages::IF, pipeline_action::Flush), //flush ifid
+            (CPU_stages::ID, pipeline_action::Flush), //flush idex
         ])
     }
 
     fn advance_winner(&mut self) -> bool {
         self.state_next = match self.state {
             EX_stop_FSM_states::Drain_WB => EX_stop_FSM_states::Drain_MEM,
-            EX_stop_FSM_states::Drain_MEM => EX_stop_FSM_states::IDLE,
-            _ => EX_stop_FSM_states::IDLE,
+            EX_stop_FSM_states::Drain_MEM => EX_stop_FSM_states::Drain_AGU,
+            EX_stop_FSM_states::Drain_AGU => EX_stop_FSM_states::IDLE,
+            EX_stop_FSM_states::IDLE => EX_stop_FSM_states::IDLE
+
         };
 
         self.state = self.state_next;

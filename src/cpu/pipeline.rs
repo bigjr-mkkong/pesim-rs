@@ -10,6 +10,9 @@ use crate::cpu::IF::IF_ID_rf;
 use crate::cpu::MEM::MEM_WB_RF;
 use crate::cpu::signal_scoreboard::sig_resolver;
 
+use crate::memory::AGU_unit::AGU_unit;
+use crate::memory::flat_memory::flat_mem;
+
 pub const PC_TESTING: u16 = 0xffff;
 
 /*
@@ -27,8 +30,9 @@ pub struct CPU {
     ex_agu_rf: EX_AGU_rf,
     agu_mem_rf: AGU_MEM_rf,
     mem_wb_rf: MEM_WB_RF,
-
     pipeline_ctrl: sig_resolver,
+    agu: AGU_unit,
+    fmem: flat_mem
 }
 
 impl CPU {
@@ -40,8 +44,10 @@ impl CPU {
             id_ex_rf: ID_EX_rf::new(),
             ex_agu_rf: EX_AGU_rf::new(),
             agu_mem_rf: AGU_MEM_rf::new(),
-            mem_wb_rf: todo!(),
+            mem_wb_rf: MEM_WB_RF::new(),
             pipeline_ctrl: sig_resolver::new(),
+            agu: AGU_unit::new(),
+            fmem: flat_mem::new()
         }
     }
 }
