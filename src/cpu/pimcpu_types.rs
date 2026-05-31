@@ -187,5 +187,6 @@ pub enum arch_action {
     HoldPC,
     WriteVRF { rd: u16, content: [u32; 4] },
     WriteFPTR { frd: u16, content: fatptr_rf },
-    WriteMEM { addr: u32, content: [u32; 4] },
+    WriteMEM_DATA { addr: u32, content: [u32; 4] },
+    WriteMEM_FPTR { addr: u32, content: fatptr_rf }
 }

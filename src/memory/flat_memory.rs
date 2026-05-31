@@ -1,7 +1,5 @@
 /*
  * TODO:
- * In this file, implement a conceptual memory which handle read/write only
- *
  * The actual interface with DRAMSim3 should be little bit complex. Some arbeiter in between flat
  * model and dram timing should be established so it can communicate with simulator high level for
  * AddTransaction()
@@ -10,6 +8,7 @@
  * talk with high level simulator. abstraction design in between worth for more thought
  *
  * Also, previous error handling should all use Result instead of eprintln!() with Option
+ * Let's focus on flat memory model first, and then the timing shit
  */
 
 use rustc_hash::FxHashMap;

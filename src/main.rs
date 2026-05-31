@@ -35,3 +35,4 @@ fn main() {
 // mod dramsim3_wrapper;
 mod cpu;
 mod memory;
+mod errors;

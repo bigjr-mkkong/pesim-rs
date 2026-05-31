@@ -120,7 +120,8 @@ impl CPU {
                                 Some(HashSet::<CPU_stages>::from([
                                         CPU_stages::IF,
                                         CPU_stages::ID,
-                                        CPU_stages::EX]))),
+                                        CPU_stages::EX,
+                                        CPU_stages::AGU]))),
                             [arch_action::HoldPC].to_vec(),
 
                         )
@@ -162,7 +163,7 @@ impl CPU {
                             signal_req::new(signal_reason::exception, CPU_stages::AGU, 
                                 Some(HashSet::<CPU_stages>::from([
                                          CPU_stages::IF, CPU_stages::ID,
-                                        CPU_stages::EX]))),
+                                        CPU_stages::EX, CPU_stages::AGU]))),
                             [arch_action::HoldPC].to_vec(),
 
                         )
@@ -204,7 +205,7 @@ impl CPU {
                             signal_req::new(signal_reason::exception, CPU_stages::AGU, 
                                 Some(HashSet::<CPU_stages>::from([
                                          CPU_stages::IF, CPU_stages::ID,
-                                        CPU_stages::EX]))),
+                                        CPU_stages::EX, CPU_stages::AGU]))),
                             [arch_action::HoldPC].to_vec(),
 
                         )
