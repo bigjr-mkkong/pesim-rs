@@ -20,12 +20,9 @@ macro_rules! check_bound {
     };
 }
 
-pub enum AGU_entry{
+pub enum AGU_entry {
     NA,
-    Ent{
-        base: u32,
-        bound: u32,
-    }
+    Ent { base: u32, bound: u32 },
 }
 
 pub struct AGU_unit {
@@ -46,10 +43,16 @@ impl AGU_unit {
         match self.table.entry(id) {
             std::collections::hash_map::Entry::Occupied(mut ent) => {
                 eprintln!("Trying to rewrite to existed AGU entry");
-                ent.insert(AGU_entry::Ent{base: base, bound: bound});
+                ent.insert(AGU_entry::Ent {
+                    base: base,
+                    bound: bound,
+                });
             }
             std::collections::hash_map::Entry::Vacant(ent) => {
-                ent.insert(AGU_entry::Ent{base:base, bound: bound});
+                ent.insert(AGU_entry::Ent {
+                    base: base,
+                    bound: bound,
+                });
             }
         }
     }
@@ -59,13 +62,9 @@ impl AGU_unit {
         let offset = fptr.get_offset();
 
         if let Some(ent) = self.table.get(&idx) {
-            match ent{
-                AGU_entry::Ent { base, bound } => {
-                    *bound > offset
-                },
-                AGU_entry::NA => {
-                    false
-                }
+            match ent {
+                AGU_entry::Ent { base, bound } => *bound > offset,
+                AGU_entry::NA => false,
             }
         } else {
             false
@@ -81,7 +80,7 @@ impl AGU_unit {
         let old_offset = old_fptr.get_offset();
 
         let new_offset = old_offset + rs2;
-        
+
         let new_fptr = fatptr_rf::new(tag, new_offset);
 
         if self.accept(new_fptr) {
@@ -89,7 +88,6 @@ impl AGU_unit {
         } else {
             None
         }
-        
     }
 
     pub fn subtraction(&self, old_fptr: fatptr_rf, vec_rf: [u32; 4], idx: u8) -> Option<fatptr_rf> {
@@ -106,7 +104,7 @@ impl AGU_unit {
         }
 
         let new_offset = old_offset - rs2;
-        
+
         let new_fptr = fatptr_rf::new(tag, new_offset);
 
         if self.accept(new_fptr) {
@@ -114,29 +112,23 @@ impl AGU_unit {
         } else {
             None
         }
-        
     }
 
     pub fn translate(&self, fptr: fatptr_rf) -> Option<u32> {
         let idx = fptr.get_idx();
         let offset = fptr.get_offset();
 
-        if !self.accept(fptr){
+        if !self.accept(fptr) {
             return None;
         } else {
             if let Some(ent) = self.table.get(&idx) {
                 match ent {
-                    AGU_entry::NA => {
-                        None
-                    },
-                    AGU_entry::Ent { base, bound } => {
-                        Some(base + offset)
-                    }
+                    AGU_entry::NA => None,
+                    AGU_entry::Ent { base, bound } => Some(base + offset),
                 }
             } else {
                 None
             }
         }
-
     }
 }

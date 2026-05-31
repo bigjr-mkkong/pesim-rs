@@ -1,7 +1,7 @@
 use crate::cpu::pimcpu_types::CPU_stages;
 use std::collections::{BTreeMap, HashMap, HashSet};
 
-#[derive(Copy, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum signal_reason {
     jump_resolution,
     RAW_resolution,
@@ -39,7 +39,7 @@ impl PartialOrd for pipeline_action {
 
 impl Ord for pipeline_action {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        self.get_rank().cmp(&&other.get_rank())
+        self.get_rank().cmp(&other.get_rank())
     }
 }
 
@@ -74,9 +74,16 @@ pub trait SigFSM: SigFSMClone {
     fn handle_blocked(&mut self) {}
 }
 
+#[derive(Clone)]
+struct active_signal {
+    issuer_stage: CPU_stages,
+    fsm: Box<dyn SigFSM>,
+    target_stages: Option<HashSet<CPU_stages>>,
+}
+
 pub struct sig_resolver {
     fsm_menu: HashMap<signal_reason, Box<dyn SigFSM>>,
-    active_sig: BTreeMap<(CPU_stages, pipeline_action), Box<dyn SigFSM>>,
+    active_sig: BTreeMap<(CPU_stages, pipeline_action, signal_reason), active_signal>,
 }
 
 pub trait SigFSMClone {
@@ -117,13 +124,28 @@ impl sig_resolver {
     }
 
     pub fn submit_signal(&mut self, sig_req: Option<signal_req>) {
-        if let Some(req) = sig_req {
-            if let Some(template_fsm) = self.fsm_menu.get(&req.sig_reason) {
-                let new_fsm = template_fsm.clone();
-                let act = new_fsm.action();
-                let key = (req.issuer_stage, act);
-                self.active_sig.insert(key, new_fsm);
+        let Some(req) = sig_req else {
+            return;
+        };
+
+        if req.sig_reason == signal_reason::no_reason {
+            return;
+        }
+
+        if let Some(template_fsm) = self.fsm_menu.get(&req.sig_reason) {
+            let new_fsm = template_fsm.clone();
+            let act = new_fsm.action();
+
+            if act == pipeline_action::Normal {
+                return;
             }
+
+            let key = (req.issuer_stage, act, req.sig_reason);
+            self.active_sig.entry(key).or_insert_with(|| active_signal {
+                issuer_stage: req.issuer_stage,
+                fsm: new_fsm,
+                target_stages: req.target_stages,
+            });
         }
     }
 
@@ -137,27 +159,44 @@ impl sig_resolver {
             (CPU_stages::WB, pipeline_action::Normal),
         ]);
 
-        let mut iter = self.active_sig.iter_mut();
-        let result = if let Some((_, champ_fsm)) = iter.next_back() {
-            let ret = champ_fsm.get_ops();
-            champ_fsm.advance_winner();
-            Some(ret)
-        } else {
-            None
-        };
+        let winner_key = self.active_sig.keys().next_back().copied();
 
-        ret.extend(result.into_iter().flatten());
+        if let Some(winner_key) = winner_key {
+            if let Some(champ_sig) = self.active_sig.get_mut(&winner_key) {
+                let mut winner_ops = champ_sig.fsm.get_ops();
 
-        for ((_, _), _fsm) in iter {
-            _fsm.handle_blocked();
+                if let Some(target_stages) = &champ_sig.target_stages {
+                    winner_ops.retain(|stage, _| target_stages.contains(stage));
+                }
+
+                ret.extend(winner_ops);
+                champ_sig.fsm.advance_winner();
+            }
+
+            for (key, active) in self.active_sig.iter_mut() {
+                if *key != winner_key {
+                    active.fsm.handle_blocked();
+                }
+            }
         }
 
         ret
     }
 
     fn update_active(&mut self) {
-        self.active_sig
-            .retain(|_, fsm| fsm.action() != pipeline_action::Normal);
+        let active_sig = std::mem::take(&mut self.active_sig);
+
+        self.active_sig = active_sig
+            .into_iter()
+            .filter_map(|(_, active)| {
+                let act = active.fsm.action();
+                if act == pipeline_action::Normal {
+                    None
+                } else {
+                    Some(((active.issuer_stage, act, active.fsm.reason()), active))
+                }
+            })
+            .collect();
     }
 
     pub fn get_decision(&mut self) -> HashMap<CPU_stages, pipeline_action> {

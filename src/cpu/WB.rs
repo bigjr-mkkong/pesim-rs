@@ -1,8 +1,7 @@
-use crate::cpu::pimcpu_types::{arch_action, CPU_stages, WBop};
+use crate::cpu::MEM::MEM_WB_RF;
+use crate::cpu::pimcpu_types::{CPU_stages, WBop, arch_action};
 use crate::cpu::pipeline::CPU;
 use crate::cpu::signal_scoreboard::{signal_reason, signal_req};
-use crate::cpu::MEM::MEM_WB_RF;
-
 
 impl CPU {
     fn eval_WB(mem_wb_rf: &MEM_WB_RF) -> (Option<()>, signal_req, Vec<arch_action>) {
@@ -61,4 +60,3 @@ impl CPU {
         }
     }
 }
-

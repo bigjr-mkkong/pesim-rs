@@ -97,8 +97,8 @@ pub enum RF_error {
 }
 
 #[derive(Debug, Clone)]
-pub enum IMEM_error{
-    PC_OOB(ErrorInfo)
+pub enum IMEM_error {
+    PC_OOB(ErrorInfo),
 }
 
 #[derive(Debug, Clone)]
@@ -107,9 +107,9 @@ pub enum DramError {
     ReadTypeError(ErrorInfo),
 }
 
-pub enum AGU_error{
+pub enum AGU_error {
     FPTR_uninit(ErrorInfo),
-    FPTR_OOB(ErrorInfo)
+    FPTR_OOB(ErrorInfo),
 }
 
 impl fmt::Display for RF_error {
@@ -117,10 +117,10 @@ impl fmt::Display for RF_error {
         match self {
             RF_error::Idx_OOB(info) => {
                 write!(f, "Instruction IDX field out of bounds: {}", info)
-            },
+            }
             RF_error::Rs_OOB(info) => {
                 write!(f, "Instruction RS field out of bounds: {}", info)
-            },
+            }
             RF_error::Rd_OOB(info) => {
                 write!(f, "Instruction RD field out of bounds: {}", info)
             }

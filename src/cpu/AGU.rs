@@ -5,7 +5,7 @@ use crate::cpu::EX::EX_AGU_rf;
 use crate::cpu::signal_scoreboard::{SigFSM, pipeline_action, signal_reason, signal_req};
 use crate::memory::AGU_unit::AGU_unit;
 
-use std::collections::{HashSet, HashMap};
+use std::collections::{HashMap, HashSet};
 
 pub struct AGU_MEM_rf {
     valid: bool,
@@ -59,7 +59,10 @@ impl AGU_MEM_rf {
 }
 
 impl CPU {
-    fn eval_AGU(ex_agu_rf: &EX_AGU_rf, agu: &AGU_unit) -> (AGU_MEM_rf, signal_req, Vec<arch_action>) {
+    fn eval_AGU(
+        ex_agu_rf: &EX_AGU_rf,
+        agu: &AGU_unit,
+    ) -> (AGU_MEM_rf, signal_req, Vec<arch_action>) {
         if !ex_agu_rf.is_valid() {
             (
                 AGU_MEM_rf {
@@ -103,7 +106,6 @@ impl CPU {
                             },
                             signal_req::new(signal_reason::no_reason, CPU_stages::AGU, None),
                             [arch_action::DoNothing].to_vec(),
-
                         )
                     } else {
                         (
@@ -116,16 +118,17 @@ impl CPU {
                                 dma_op: DMAop::NOP,
                                 wb_op: WBop::NOP,
                             },
-                            signal_req::new(signal_reason::exception, CPU_stages::AGU, 
+                            signal_req::new(
+                                signal_reason::exception,
+                                CPU_stages::AGU,
                                 Some(HashSet::<CPU_stages>::from([
-                                        CPU_stages::IF,
-                                        CPU_stages::ID,
-                                        CPU_stages::EX,
-                                        CPU_stages::AGU]))),
+                                    CPU_stages::IF,
+                                    CPU_stages::ID,
+                                    CPU_stages::EX,
+                                ])),
+                            ),
                             [arch_action::HoldPC].to_vec(),
-
                         )
-
                     }
                 }
                 AGUop::ADD {
@@ -147,7 +150,6 @@ impl CPU {
                             },
                             signal_req::new(signal_reason::no_reason, CPU_stages::AGU, None),
                             [arch_action::DoNothing].to_vec(),
-
                         )
                     } else {
                         (
@@ -160,14 +162,17 @@ impl CPU {
                                 dma_op: DMAop::NOP,
                                 wb_op: WBop::NOP,
                             },
-                            signal_req::new(signal_reason::exception, CPU_stages::AGU, 
+                            signal_req::new(
+                                signal_reason::exception,
+                                CPU_stages::AGU,
                                 Some(HashSet::<CPU_stages>::from([
-                                         CPU_stages::IF, CPU_stages::ID,
-                                        CPU_stages::EX, CPU_stages::AGU]))),
+                                    CPU_stages::IF,
+                                    CPU_stages::ID,
+                                    CPU_stages::EX,
+                                ])),
+                            ),
                             [arch_action::HoldPC].to_vec(),
-
                         )
-
                     }
                 }
                 AGUop::SUB {
@@ -189,7 +194,6 @@ impl CPU {
                             },
                             signal_req::new(signal_reason::no_reason, CPU_stages::AGU, None),
                             [arch_action::DoNothing].to_vec(),
-
                         )
                     } else {
                         (
@@ -202,14 +206,17 @@ impl CPU {
                                 dma_op: DMAop::NOP,
                                 wb_op: WBop::NOP,
                             },
-                            signal_req::new(signal_reason::exception, CPU_stages::AGU, 
+                            signal_req::new(
+                                signal_reason::exception,
+                                CPU_stages::AGU,
                                 Some(HashSet::<CPU_stages>::from([
-                                         CPU_stages::IF, CPU_stages::ID,
-                                        CPU_stages::EX, CPU_stages::AGU]))),
+                                    CPU_stages::IF,
+                                    CPU_stages::ID,
+                                    CPU_stages::EX,
+                                ])),
+                            ),
                             [arch_action::HoldPC].to_vec(),
-
                         )
-
                     }
                 }
             }
@@ -218,16 +225,16 @@ impl CPU {
 }
 
 #[derive(Clone, Copy)]
-enum AGU_stop_FSM_states{
+pub enum AGU_stop_FSM_states {
     Drain_WB,
     Drain_MEM,
-    Idle
+    Idle,
 }
 
 #[derive(Clone, Copy)]
-struct AGU_stop_FSM{
+pub struct AGU_stop_FSM {
     state: AGU_stop_FSM_states,
-    state_next: AGU_stop_FSM_states
+    state_next: AGU_stop_FSM_states,
 }
 
 impl SigFSM for AGU_stop_FSM {
@@ -240,7 +247,7 @@ impl SigFSM for AGU_stop_FSM {
         match self.state {
             AGU_stop_FSM_states::Drain_WB => pipeline_action::Flush,
             AGU_stop_FSM_states::Drain_MEM => pipeline_action::Flush,
-            AGU_stop_FSM_states::Idle => pipeline_action::Normal
+            AGU_stop_FSM_states::Idle => pipeline_action::Normal,
         }
     }
 
@@ -256,8 +263,7 @@ impl SigFSM for AGU_stop_FSM {
         self.state_next = match self.state {
             AGU_stop_FSM_states::Drain_WB => AGU_stop_FSM_states::Drain_MEM,
             AGU_stop_FSM_states::Drain_MEM => AGU_stop_FSM_states::Idle,
-            AGU_stop_FSM_states::Idle => AGU_stop_FSM_states::Idle
-
+            AGU_stop_FSM_states::Idle => AGU_stop_FSM_states::Idle,
         };
 
         self.state = self.state_next;

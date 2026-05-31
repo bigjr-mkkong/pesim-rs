@@ -34,5 +34,5 @@ fn main() {
 // mod dramsim3_cxx_ffi;
 // mod dramsim3_wrapper;
 mod cpu;
-mod memory;
 mod errors;
+mod memory;

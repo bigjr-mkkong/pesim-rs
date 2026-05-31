@@ -176,9 +176,14 @@ impl CPU {
                                 dma_op: DMAop::NOP,
                                 wb_op: WBop::NOP,
                             },
-                            signal_req::new(signal_reason::no_reason, CPU_stages::EX, 
+                            signal_req::new(
+                                signal_reason::no_reason,
+                                CPU_stages::EX,
                                 Some(HashSet::<CPU_stages>::from([
-                                         CPU_stages::IF, CPU_stages::ID]))),
+                                    CPU_stages::IF,
+                                    CPU_stages::ID,
+                                ])),
+                            ),
                             [arch_action::HoldPC].to_vec(),
                         )
                     } else {
@@ -196,7 +201,7 @@ impl CPU {
                                 CPU_stages::EX,
                                 Some(HashSet::<CPU_stages>::from([
                                     CPU_stages::IF,
-                                    CPU_stages::EX,
+                                    CPU_stages::ID,
                                 ])),
                             ),
                             [arch_action::DoNothing].to_vec(),
@@ -233,7 +238,7 @@ impl SigFSM for EX_stop_FSM {
             EX_stop_FSM_states::Drain_WB => pipeline_action::Flush,
             EX_stop_FSM_states::Drain_MEM => pipeline_action::Flush,
             EX_stop_FSM_states::Drain_AGU => pipeline_action::Flush,
-            EX_stop_FSM_states::IDLE => pipeline_action::Normal
+            EX_stop_FSM_states::IDLE => pipeline_action::Normal,
         }
     }
 
@@ -249,8 +254,7 @@ impl SigFSM for EX_stop_FSM {
             EX_stop_FSM_states::Drain_WB => EX_stop_FSM_states::Drain_MEM,
             EX_stop_FSM_states::Drain_MEM => EX_stop_FSM_states::Drain_AGU,
             EX_stop_FSM_states::Drain_AGU => EX_stop_FSM_states::IDLE,
-            EX_stop_FSM_states::IDLE => EX_stop_FSM_states::IDLE
-
+            EX_stop_FSM_states::IDLE => EX_stop_FSM_states::IDLE,
         };
 
         self.state = self.state_next;

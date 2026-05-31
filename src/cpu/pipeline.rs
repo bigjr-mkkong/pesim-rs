@@ -3,12 +3,12 @@ use crate::cpu::imem::IMEM;
 use crate::cpu::pimcpu_types;
 use std::collections::HashMap;
 
-use crate::cpu::AGU::AGU_MEM_rf;
-use crate::cpu::EX::EX_AGU_rf;
-use crate::cpu::ID::ID_EX_rf;
+use crate::cpu::AGU::{AGU_MEM_rf, AGU_stop_FSM};
+use crate::cpu::EX::{EX_AGU_rf, EX_stop_FSM};
+use crate::cpu::ID::{ID_EX_rf, ID_jump_FSM};
 use crate::cpu::IF::IF_ID_rf;
-use crate::cpu::MEM::MEM_WB_RF;
-use crate::cpu::signal_scoreboard::sig_resolver;
+use crate::cpu::MEM::{MEM_WB_RF, MEM_stop_FSM};
+use crate::cpu::signal_scoreboard::{sig_resolver, signal_reason};
 
 use crate::memory::AGU_unit::AGU_unit;
 use crate::memory::flat_memory::flat_mem;
@@ -32,11 +32,17 @@ pub struct CPU {
     mem_wb_rf: MEM_WB_RF,
     pipeline_ctrl: sig_resolver,
     agu: AGU_unit,
-    fmem: flat_mem
+    fmem: flat_mem,
 }
 
 impl CPU {
     pub fn new() -> Self {
+        let mut pipeline_ctrl = sig_resolver::new();
+        pipeline_ctrl.add_new_fsm(signal_reason::jump_resolution, Box::new(ID_jump_FSM::new()));
+        pipeline_ctrl.add_new_fsm(signal_reason::prog_end, Box::new(EX_stop_FSM::new()));
+        pipeline_ctrl.add_new_fsm(signal_reason::exception, Box::new(AGU_stop_FSM::new()));
+        pipeline_ctrl.add_new_fsm(signal_reason::MEM_block, Box::new(MEM_stop_FSM::new()));
+
         Self {
             imem: IMEM::new(),
             RF: arch_rf::new(),
@@ -45,9 +51,9 @@ impl CPU {
             ex_agu_rf: EX_AGU_rf::new(),
             agu_mem_rf: AGU_MEM_rf::new(),
             mem_wb_rf: MEM_WB_RF::new(),
-            pipeline_ctrl: sig_resolver::new(),
+            pipeline_ctrl,
             agu: AGU_unit::new(),
-            fmem: flat_mem::new()
+            fmem: flat_mem::new(),
         }
     }
 

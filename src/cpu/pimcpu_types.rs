@@ -6,10 +6,10 @@ pub struct fatptr_rf {
 }
 
 impl fatptr_rf {
-    pub const fn new(tag_: u8, offset_: u32) -> Self{
-        Self{
+    pub const fn new(tag_: u8, offset_: u32) -> Self {
+        Self {
             tag: tag_,
-            offset: offset_
+            offset: offset_,
         }
     }
 
@@ -113,7 +113,7 @@ impl PartialOrd for CPU_stages {
 
 impl Ord for CPU_stages {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        self.get_rank().cmp(&&other.get_rank())
+        self.get_rank().cmp(&other.get_rank())
     }
 }
 
@@ -188,5 +188,5 @@ pub enum arch_action {
     WriteVRF { rd: u16, content: [u32; 4] },
     WriteFPTR { frd: u16, content: fatptr_rf },
     WriteMEM_DATA { addr: u32, content: [u32; 4] },
-    WriteMEM_FPTR { addr: u32, content: fatptr_rf }
+    WriteMEM_FPTR { addr: u32, content: fatptr_rf },
 }
