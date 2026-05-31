@@ -61,6 +61,10 @@ impl signal_req {
             target_stages: target,
         }
     }
+
+    pub fn get_reason(&self) -> signal_reason {
+        self.sig_reason
+    }
 }
 
 pub trait SigFSM: SigFSMClone {

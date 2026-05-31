@@ -4,7 +4,7 @@ use crate::cpu::pipeline::CPU;
 use crate::cpu::signal_scoreboard::{signal_reason, signal_req};
 
 impl CPU {
-    fn eval_WB(mem_wb_rf: &MEM_WB_RF) -> (Option<()>, signal_req, Vec<arch_action>) {
+    pub fn eval_WB(&self, mem_wb_rf: &MEM_WB_RF) -> (Option<()>, signal_req, Vec<arch_action>) {
         if !mem_wb_rf.is_valid() {
             return (
                 None,
@@ -25,7 +25,7 @@ impl CPU {
                         None,
                         signal_req::new(signal_reason::no_reason, CPU_stages::WB, None),
                         [arch_action::WriteVRF {
-                            rd: rd as u16,
+                            rd: rd as u8,
                             content,
                         }]
                         .to_vec(),
@@ -44,7 +44,7 @@ impl CPU {
                         None,
                         signal_req::new(signal_reason::no_reason, CPU_stages::WB, None),
                         [arch_action::WriteFPTR {
-                            frd: frd as u16,
+                            frd: frd as u8,
                             content,
                         }]
                         .to_vec(),

@@ -53,7 +53,11 @@ impl ID_EX_rf {
 }
 
 impl CPU {
-    fn eval_ID(ifid_rf: &IF_ID_rf, arf: &arch_rf) -> (ID_EX_rf, signal_req, Vec<arch_action>) {
+    pub fn eval_ID(
+        &self,
+        ifid_rf: &IF_ID_rf,
+        arf: &arch_rf,
+    ) -> (ID_EX_rf, signal_req, Vec<arch_action>) {
         if !ifid_rf.is_valid() {
             (
                 ID_EX_rf {

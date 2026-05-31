@@ -47,7 +47,8 @@ impl MEM_WB_RF {
 }
 
 impl CPU {
-    fn eval_MEM(
+    pub fn eval_MEM(
+        &self,
         agu_mem_rf: &AGU_MEM_rf,
         fmem: &flat_mem,
     ) -> (MEM_WB_RF, signal_req, Vec<arch_action>) {

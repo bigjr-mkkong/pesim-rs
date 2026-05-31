@@ -31,7 +31,7 @@ impl IF_ID_rf {
 }
 
 impl CPU {
-    fn eval_IF(rf: &arch_rf) -> (IF_ID_rf, signal_req, Vec<arch_action>) {
+    pub fn eval_IF(&self, rf: &arch_rf) -> (IF_ID_rf, signal_req, Vec<arch_action>) {
         (
             IF_ID_rf {
                 valid: true,

@@ -1,5 +1,5 @@
 use crate::memory::AGU_unit::{BOUND_BITS, IDX_BITS};
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, PartialEq, Eq, Hash)]
 pub struct fatptr_rf {
     tag: u8,
     offset: u32,
@@ -176,17 +176,42 @@ pub enum WBop {
     WB_FPTR { frd: u8 },
 }
 
-/*
- * TODO
- * HoldPC will not change current PC, some previous DoNothing arch_action should be it
- */
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Hash)]
 pub enum arch_action {
     DoNothing,
     WritePC { new_pc: u16 },
     HoldPC,
-    WriteVRF { rd: u16, content: [u32; 4] },
-    WriteFPTR { frd: u16, content: fatptr_rf },
+    WriteVRF { rd: u8, content: [u32; 4] },
+    WriteFPTR { frd: u8, content: fatptr_rf },
     WriteMEM_DATA { addr: u32, content: [u32; 4] },
     WriteMEM_FPTR { addr: u32, content: fatptr_rf },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum arch_dest {
+    PC,
+    Vec_RF(u8),
+    Fptr_RF(u8),
+    Vec_MEM(u32),
+    Fptr_MEM(u32),
+}
+
+impl arch_action {
+    pub fn dest(&self) -> Option<arch_dest> {
+        match self {
+            arch_action::DoNothing => None,
+
+            arch_action::WritePC { .. } => Some(arch_dest::PC),
+
+            arch_action::HoldPC => Some(arch_dest::PC),
+
+            arch_action::WriteVRF { rd, .. } => Some(arch_dest::Vec_RF(*rd)),
+
+            arch_action::WriteFPTR { frd, .. } => Some(arch_dest::Fptr_RF(*frd)),
+
+            arch_action::WriteMEM_DATA { addr, .. } => Some(arch_dest::Vec_MEM(*addr)),
+
+            arch_action::WriteMEM_FPTR { addr, .. } => Some(arch_dest::Fptr_MEM(*addr)),
+        }
+    }
 }

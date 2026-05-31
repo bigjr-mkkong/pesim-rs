@@ -59,7 +59,8 @@ impl AGU_MEM_rf {
 }
 
 impl CPU {
-    fn eval_AGU(
+    pub fn eval_AGU(
+        &self,
         ex_agu_rf: &EX_AGU_rf,
         agu: &AGU_unit,
     ) -> (AGU_MEM_rf, signal_req, Vec<arch_action>) {

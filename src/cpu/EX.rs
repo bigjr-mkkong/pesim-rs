@@ -51,7 +51,7 @@ impl EX_AGU_rf {
 }
 
 impl CPU {
-    fn eval_EX(idex_rf: &ID_EX_rf) -> (EX_AGU_rf, signal_req, Vec<arch_action>) {
+    pub fn eval_EX(&self, idex_rf: &ID_EX_rf) -> (EX_AGU_rf, signal_req, Vec<arch_action>) {
         if !idex_rf.is_valid() {
             (
                 EX_AGU_rf {

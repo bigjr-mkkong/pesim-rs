@@ -1,6 +1,7 @@
 use crate::cpu::RF::arch_rf;
 use crate::cpu::imem::IMEM;
 use crate::cpu::pimcpu_types;
+use crate::cpu::pimcpu_types::arch_action;
 use std::collections::HashMap;
 
 use crate::cpu::AGU::{AGU_MEM_rf, AGU_stop_FSM};
@@ -9,17 +10,12 @@ use crate::cpu::ID::{ID_EX_rf, ID_jump_FSM};
 use crate::cpu::IF::IF_ID_rf;
 use crate::cpu::MEM::{MEM_WB_RF, MEM_stop_FSM};
 use crate::cpu::signal_scoreboard::{sig_resolver, signal_reason};
+use std::collections::HashSet;
 
 use crate::memory::AGU_unit::AGU_unit;
 use crate::memory::flat_memory::flat_mem;
 
 pub const PC_TESTING: u16 = 0xffff;
-
-/*
- * TODO
- * Each pipeline stage should return the next stage, the signal to address timing/flush/stall, as
- * well as the changes to architectural register. The last one is unsolved and need to be done
- */
 
 pub struct CPU {
     imem: IMEM,
@@ -57,7 +53,43 @@ impl CPU {
         }
     }
 
+    pub fn get_RF(&mut self) -> &mut arch_rf {
+        &mut self.RF
+    }
+
+    pub fn get_fmem(&mut self) -> &mut flat_mem {
+        &mut self.fmem
+    }
+
     pub fn tick(&mut self) {
-        todo!()
+        let (_, wb_sigreq, wb_archop) = self.eval_WB(&self.mem_wb_rf);
+        self.pipeline_ctrl.submit_signal(Some(wb_sigreq));
+
+        let (mem_wb_next, mem_sigreq, mem_archop) = self.eval_MEM(&self.agu_mem_rf, &self.fmem);
+        self.pipeline_ctrl.submit_signal(Some(mem_sigreq));
+
+        let (agu_mem_next, agu_sigreq, agu_archop) = self.eval_AGU(&self.ex_agu_rf, &self.agu);
+        self.pipeline_ctrl.submit_signal(Some(agu_sigreq));
+
+        let (ex_agu_next, ex_sigreq, ex_archop) = self.eval_EX(&self.id_ex_rf);
+        self.pipeline_ctrl.submit_signal(Some(ex_sigreq));
+
+        let (id_ex_next, id_sigreq, id_archop) = self.eval_ID(&self.if_id_rf, &self.RF);
+        self.pipeline_ctrl.submit_signal(Some(id_sigreq));
+
+        let (if_id_next, if_sigreq, if_archop) = self.eval_IF(&self.RF);
+        self.pipeline_ctrl.submit_signal(Some(if_sigreq));
+
+        let pipeline_op = self.pipeline_ctrl.get_decision();
+
+        /*
+         * TODO:
+         * Fill up the sequential code for cpu simulator
+         * 1. Collect all archop into one vec
+         * 2. Call self.arch_update to apply those operation
+         * 3. Decide which pipelie rf_next will be used in update current rf based on dicition made
+         *    by self.pipeline_ctrl above
+         *    update pipeline rf
+         */
     }
 }
