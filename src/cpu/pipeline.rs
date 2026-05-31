@@ -50,4 +50,8 @@ impl CPU {
             fmem: flat_mem::new()
         }
     }
+
+    pub fn tick(&mut self) {
+        todo!()
+    }
 }
