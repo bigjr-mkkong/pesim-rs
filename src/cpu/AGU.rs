@@ -9,7 +9,6 @@ use std::collections::{HashMap, HashSet};
 
 pub struct AGU_MEM_rf {
     valid: bool,
-    flush: bool,
 
     phys_addr: Option<u32>,
     arith_in: Option<[u32; 4]>,
@@ -23,7 +22,6 @@ impl AGU_MEM_rf {
     pub const fn new() -> Self {
         Self {
             valid: false,
-            flush: false,
             phys_addr: None,
             arith_in: None,
             ptr_result: None,
@@ -35,6 +33,10 @@ impl AGU_MEM_rf {
 
     pub fn is_valid(&self) -> bool {
         self.valid
+    }
+
+    pub fn invalidate(&mut self) {
+        self.valid = false;
     }
 
     pub fn get_phys_addr(&self) -> Option<u32> {
@@ -68,7 +70,6 @@ impl CPU {
             (
                 AGU_MEM_rf {
                     valid: false,
-                    flush: false,
                     phys_addr: None,
                     arith_in: None,
                     ptr_result: None,
@@ -83,7 +84,6 @@ impl CPU {
                 AGUop::NOP => (
                     AGU_MEM_rf {
                         valid: true,
-                        flush: false,
                         phys_addr: None,
                         arith_in: None,
                         ptr_result: None,
@@ -98,7 +98,6 @@ impl CPU {
                         (
                             AGU_MEM_rf {
                                 valid: true,
-                                flush: false,
                                 phys_addr: agu.translate(fptr_lit),
                                 arith_in: ex_agu_rf.get_arith_result(),
                                 ptr_result: None,
@@ -112,7 +111,6 @@ impl CPU {
                         (
                             AGU_MEM_rf {
                                 valid: false,
-                                flush: false,
                                 phys_addr: None,
                                 arith_in: None,
                                 ptr_result: None,
@@ -142,7 +140,6 @@ impl CPU {
                         (
                             AGU_MEM_rf {
                                 valid: true,
-                                flush: false,
                                 phys_addr: None,
                                 arith_in: ex_agu_rf.get_arith_result(),
                                 ptr_result: Some(new_fptr),
@@ -156,7 +153,6 @@ impl CPU {
                         (
                             AGU_MEM_rf {
                                 valid: false,
-                                flush: false,
                                 phys_addr: None,
                                 arith_in: None,
                                 ptr_result: None,
@@ -186,7 +182,6 @@ impl CPU {
                         (
                             AGU_MEM_rf {
                                 valid: true,
-                                flush: false,
                                 phys_addr: None,
                                 arith_in: ex_agu_rf.get_arith_result(),
                                 ptr_result: Some(new_fptr),
@@ -200,7 +195,6 @@ impl CPU {
                         (
                             AGU_MEM_rf {
                                 valid: false,
-                                flush: false,
                                 phys_addr: None,
                                 arith_in: None,
                                 ptr_result: None,

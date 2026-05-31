@@ -10,7 +10,6 @@ use std::collections::{HashMap, HashSet};
 
 pub struct ID_EX_rf {
     valid: bool,
-    flush: bool,
 
     alu_op: ALUop,
     agu_op: AGUop,
@@ -22,7 +21,6 @@ impl ID_EX_rf {
     pub const fn new() -> Self {
         Self {
             valid: false,
-            flush: false,
 
             alu_op: ALUop::NOP,
             agu_op: AGUop::NOP,
@@ -33,6 +31,10 @@ impl ID_EX_rf {
 
     pub fn is_valid(&self) -> bool {
         self.valid
+    }
+
+    pub fn invalidate(&mut self) {
+        self.valid = false;
     }
 
     pub fn get_alu_op(&self) -> ALUop {
@@ -62,7 +64,6 @@ impl CPU {
             (
                 ID_EX_rf {
                     valid: false,
-                    flush: false,
                     alu_op: ALUop::NOP,
                     agu_op: AGUop::NOP,
                     dma_op: DMAop::NOP,
@@ -76,7 +77,6 @@ impl CPU {
                 inst::NOP => (
                     ID_EX_rf {
                         valid: true,
-                        flush: false,
                         alu_op: ALUop::NOP,
                         agu_op: AGUop::NOP,
                         dma_op: DMAop::NOP,
@@ -88,7 +88,6 @@ impl CPU {
                 inst::ADD128 { rd, rs1, rs2 } => (
                     ID_EX_rf {
                         valid: true,
-                        flush: false,
                         alu_op: ALUop::ADD {
                             rs1_lit: arf.read_vregs(rs1),
                             rs2_lit: arf.read_vregs(rs2),
@@ -104,7 +103,6 @@ impl CPU {
                 inst::SUB128 { rd, rs1, rs2 } => (
                     ID_EX_rf {
                         valid: true,
-                        flush: false,
                         alu_op: ALUop::SUB {
                             rs1_lit: arf.read_vregs(rs1),
                             rs2_lit: arf.read_vregs(rs2),
@@ -120,7 +118,6 @@ impl CPU {
                 inst::MUL128 { rd, rs1, rs2 } => (
                     ID_EX_rf {
                         valid: true,
-                        flush: false,
                         alu_op: ALUop::MUL {
                             rs1_lit: arf.read_vregs(rs1),
                             rs2_lit: arf.read_vregs(rs2),
@@ -136,7 +133,6 @@ impl CPU {
                 inst::AND128 { rd, rs1, rs2 } => (
                     ID_EX_rf {
                         valid: true,
-                        flush: false,
                         alu_op: ALUop::AND {
                             rs1_lit: arf.read_vregs(rs1),
                             rs2_lit: arf.read_vregs(rs2),
@@ -151,7 +147,6 @@ impl CPU {
                 inst::LD128 { rd, frs } => (
                     ID_EX_rf {
                         valid: true,
-                        flush: false,
                         alu_op: ALUop::NOP,
                         agu_op: AGUop::CHK {
                             fptr_lit: arf
@@ -167,7 +162,6 @@ impl CPU {
                 inst::ST128 { rs, frd } => (
                     ID_EX_rf {
                         valid: true,
-                        flush: false,
                         alu_op: ALUop::NOP,
                         agu_op: AGUop::CHK {
                             fptr_lit: arf
@@ -186,7 +180,6 @@ impl CPU {
                 inst::FatPtrLD { frd, frs } => (
                     ID_EX_rf {
                         valid: true,
-                        flush: false,
                         alu_op: ALUop::NOP,
                         agu_op: AGUop::CHK {
                             fptr_lit: arf
@@ -202,7 +195,6 @@ impl CPU {
                 inst::FatPtrST { frd, frs } => (
                     ID_EX_rf {
                         valid: true,
-                        flush: false,
                         alu_op: ALUop::NOP,
                         agu_op: AGUop::CHK {
                             fptr_lit: arf
@@ -227,7 +219,6 @@ impl CPU {
                 } => (
                     ID_EX_rf {
                         valid: true,
-                        flush: false,
                         alu_op: ALUop::NOP,
                         agu_op: AGUop::ADD {
                             fptr_lit: arf
@@ -250,7 +241,6 @@ impl CPU {
                 } => (
                     ID_EX_rf {
                         valid: true,
-                        flush: false,
                         alu_op: ALUop::NOP,
                         agu_op: AGUop::SUB {
                             fptr_lit: arf
@@ -268,7 +258,6 @@ impl CPU {
                 inst::JUMP { inst_imm } => (
                     ID_EX_rf {
                         valid: false,
-                        flush: false,
                         alu_op: ALUop::NOP,
                         agu_op: AGUop::NOP,
                         dma_op: DMAop::NOP,
@@ -284,7 +273,6 @@ impl CPU {
                 inst::EqualExit { rd, rs1 } => (
                     ID_EX_rf {
                         valid: true,
-                        flush: false,
                         alu_op: ALUop::TEST {
                             rs1_lit: arf.read_vregs(rs1),
                             rs2_lit: arf.read_vregs(rd),

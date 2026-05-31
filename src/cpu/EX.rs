@@ -8,7 +8,6 @@ use crate::cpu::signal_scoreboard::{SigFSM, pipeline_action, signal_reason, sign
 use std::collections::{HashMap, HashSet};
 pub struct EX_AGU_rf {
     valid: bool,
-    flush: bool,
 
     arith_result: Option<[u32; 4]>,
 
@@ -21,7 +20,6 @@ impl EX_AGU_rf {
     pub const fn new() -> Self {
         Self {
             valid: false,
-            flush: false,
             arith_result: None,
             agu_op: AGUop::NOP,
             dma_op: DMAop::NOP,
@@ -31,6 +29,10 @@ impl EX_AGU_rf {
 
     pub fn is_valid(&self) -> bool {
         self.valid
+    }
+
+    pub fn invalidate(&mut self) {
+        self.valid = false;
     }
 
     pub fn get_arith_result(&self) -> Option<[u32; 4]> {
@@ -56,7 +58,6 @@ impl CPU {
             (
                 EX_AGU_rf {
                     valid: false,
-                    flush: false,
                     arith_result: None,
                     agu_op: AGUop::NOP,
                     dma_op: DMAop::NOP,
@@ -70,7 +71,6 @@ impl CPU {
                 ALUop::NOP => (
                     EX_AGU_rf {
                         valid: true,
-                        flush: false,
                         arith_result: None,
                         agu_op: AGUop::NOP,
                         dma_op: DMAop::NOP,
@@ -89,7 +89,6 @@ impl CPU {
                     (
                         EX_AGU_rf {
                             valid: true,
-                            flush: false,
                             arith_result: Some(tmp_result),
                             agu_op: idex_rf.get_agu_op(),
                             dma_op: idex_rf.get_dma_op(),
@@ -109,7 +108,6 @@ impl CPU {
                     (
                         EX_AGU_rf {
                             valid: true,
-                            flush: false,
                             arith_result: Some(tmp_result),
                             agu_op: idex_rf.get_agu_op(),
                             dma_op: idex_rf.get_dma_op(),
@@ -129,7 +127,6 @@ impl CPU {
                     (
                         EX_AGU_rf {
                             valid: true,
-                            flush: false,
                             arith_result: Some(tmp_result),
                             agu_op: idex_rf.get_agu_op(),
                             dma_op: idex_rf.get_dma_op(),
@@ -149,7 +146,6 @@ impl CPU {
                     (
                         EX_AGU_rf {
                             valid: true,
-                            flush: false,
                             arith_result: Some(tmp_result),
                             agu_op: idex_rf.get_agu_op(),
                             dma_op: idex_rf.get_dma_op(),
@@ -170,7 +166,6 @@ impl CPU {
                         (
                             EX_AGU_rf {
                                 valid: true,
-                                flush: false,
                                 arith_result: None,
                                 agu_op: AGUop::NOP,
                                 dma_op: DMAop::NOP,
@@ -190,7 +185,6 @@ impl CPU {
                         (
                             EX_AGU_rf {
                                 valid: true,
-                                flush: false,
                                 arith_result: None,
                                 agu_op: AGUop::NOP,
                                 dma_op: DMAop::NOP,

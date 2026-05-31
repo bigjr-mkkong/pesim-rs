@@ -1,17 +1,13 @@
 use crate::cpu::RF::arch_rf;
 use crate::cpu::imem::IMEM;
-use crate::cpu::pimcpu_types;
-use crate::cpu::pimcpu_types::arch_action;
-use std::collections::HashMap;
+use crate::cpu::pimcpu_types::{CPU_stages, arch_action};
 
 use crate::cpu::AGU::{AGU_MEM_rf, AGU_stop_FSM};
 use crate::cpu::EX::{EX_AGU_rf, EX_stop_FSM};
 use crate::cpu::ID::{ID_EX_rf, ID_jump_FSM};
 use crate::cpu::IF::IF_ID_rf;
 use crate::cpu::MEM::{MEM_WB_RF, MEM_stop_FSM};
-use crate::cpu::signal_scoreboard::{sig_resolver, signal_reason};
-use std::collections::HashSet;
-
+use crate::cpu::signal_scoreboard::{pipeline_action, sig_resolver, signal_reason};
 use crate::memory::AGU_unit::AGU_unit;
 use crate::memory::flat_memory::flat_mem;
 
@@ -77,19 +73,62 @@ impl CPU {
         let (id_ex_next, id_sigreq, id_archop) = self.eval_ID(&self.if_id_rf, &self.RF);
         self.pipeline_ctrl.submit_signal(Some(id_sigreq));
 
-        let (if_id_next, if_sigreq, if_archop) = self.eval_IF(&self.RF);
+        let (if_id_next, if_sigreq, if_archop) = self.eval_IF(&self.RF, &self.imem);
         self.pipeline_ctrl.submit_signal(Some(if_sigreq));
 
         let pipeline_op = self.pipeline_ctrl.get_decision();
 
-        /*
-         * TODO:
-         * Fill up the sequential code for cpu simulator
-         * 1. Collect all archop into one vec
-         * 2. Call self.arch_update to apply those operation
-         * 3. Decide which pipelie rf_next will be used in update current rf based on dicition made
-         *    by self.pipeline_ctrl above
-         *    update pipeline rf
-         */
+        let stage_action = |stage| {
+            pipeline_op
+                .get(&stage)
+                .copied()
+                .unwrap_or(pipeline_action::Normal)
+        };
+
+        let mut arch_ops = Vec::new();
+        let mut collect_stage_ops = |stage, ops: Vec<arch_action>| {
+            if stage_action(stage) == pipeline_action::Normal {
+                arch_ops.extend(ops);
+            }
+        };
+
+        collect_stage_ops(CPU_stages::WB, wb_archop);
+        collect_stage_ops(CPU_stages::MEM, mem_archop);
+        collect_stage_ops(CPU_stages::AGU, agu_archop);
+        collect_stage_ops(CPU_stages::EX, ex_archop);
+        collect_stage_ops(CPU_stages::ID, id_archop);
+        collect_stage_ops(CPU_stages::IF, if_archop);
+
+        self.arch_update(arch_ops);
+
+        match stage_action(CPU_stages::MEM) {
+            pipeline_action::Normal => self.mem_wb_rf = mem_wb_next,
+            pipeline_action::Stall => {}
+            pipeline_action::Flush | pipeline_action::END => self.mem_wb_rf.invalidate(),
+        }
+
+        match stage_action(CPU_stages::AGU) {
+            pipeline_action::Normal => self.agu_mem_rf = agu_mem_next,
+            pipeline_action::Stall => {}
+            pipeline_action::Flush | pipeline_action::END => self.agu_mem_rf.invalidate(),
+        }
+
+        match stage_action(CPU_stages::EX) {
+            pipeline_action::Normal => self.ex_agu_rf = ex_agu_next,
+            pipeline_action::Stall => {}
+            pipeline_action::Flush | pipeline_action::END => self.ex_agu_rf.invalidate(),
+        }
+
+        match stage_action(CPU_stages::ID) {
+            pipeline_action::Normal => self.id_ex_rf = id_ex_next,
+            pipeline_action::Stall => {}
+            pipeline_action::Flush | pipeline_action::END => self.id_ex_rf.invalidate(),
+        }
+
+        match stage_action(CPU_stages::IF) {
+            pipeline_action::Normal => self.if_id_rf = if_id_next,
+            pipeline_action::Stall => {}
+            pipeline_action::Flush | pipeline_action::END => self.if_id_rf.invalidate(),
+        }
     }
 }

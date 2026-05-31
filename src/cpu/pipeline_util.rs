@@ -1,5 +1,3 @@
-use crate::cpu::RF::arch_rf;
-use crate::cpu::imem::IMEM;
 use crate::cpu::pimcpu_types::arch_action;
 use crate::cpu::pipeline::CPU;
 use std::collections::HashSet;
@@ -24,15 +22,16 @@ impl CPU {
             real_ops.push(op);
         }
 
-        let mut pc_next: Option<u16> = None;
+        let current_pc = self.get_RF().read_pc();
+        let mut pc_next = current_pc.wrapping_add(1);
 
         for op in real_ops {
             match op {
                 arch_action::WritePC { new_pc } => {
-                    pc_next = Some(new_pc);
+                    pc_next = new_pc;
                 }
                 arch_action::HoldPC => {
-                    pc_next = Some(self.get_RF().read_pc());
+                    pc_next = current_pc;
                 }
                 arch_action::WriteVRF { rd, content } => {
                     self.get_RF().write_vregs(rd, content);
@@ -50,14 +49,6 @@ impl CPU {
             }
         }
 
-        match pc_next {
-            Some(next_pc) => {
-                self.get_RF().write_pc(next_pc);
-            }
-            None => {
-                let pc = self.get_RF().read_pc();
-                self.get_RF().write_pc(pc.wrapping_add(1));
-            }
-        }
+        self.get_RF().write_pc(pc_next);
     }
 }

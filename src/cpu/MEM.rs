@@ -9,7 +9,6 @@ use crate::memory::flat_memory::{dram_entry, flat_mem};
 
 pub struct MEM_WB_RF {
     valid: bool,
-    flush: bool,
 
     arith_result: Option<[u32; 4]>,
     ptr_result: Option<fatptr_rf>,
@@ -21,7 +20,6 @@ impl MEM_WB_RF {
     pub const fn new() -> Self {
         Self {
             valid: false,
-            flush: false,
 
             arith_result: None,
             ptr_result: None,
@@ -31,6 +29,10 @@ impl MEM_WB_RF {
 
     pub fn is_valid(&self) -> bool {
         self.valid
+    }
+
+    pub fn invalidate(&mut self) {
+        self.valid = false;
     }
 
     pub fn get_arith_result(&self) -> Option<[u32; 4]> {
@@ -56,7 +58,6 @@ impl CPU {
             (
                 MEM_WB_RF {
                     valid: false,
-                    flush: false,
                     arith_result: None,
                     ptr_result: None,
                     wb_op: WBop::NOP,
@@ -69,7 +70,6 @@ impl CPU {
                 DMAop::NOP => (
                     MEM_WB_RF {
                         valid: true,
-                        flush: false,
                         arith_result: None,
                         ptr_result: None,
                         wb_op: WBop::NOP,
@@ -82,7 +82,6 @@ impl CPU {
                         (
                             MEM_WB_RF {
                                 valid: true,
-                                flush: false,
                                 arith_result: fmem.mem_read_data(paddr),
                                 ptr_result: None,
                                 wb_op: agu_mem_rf.get_wb_op(),
@@ -103,7 +102,6 @@ impl CPU {
                         (
                             MEM_WB_RF {
                                 valid: true,
-                                flush: false,
                                 arith_result: None,
                                 ptr_result: None,
                                 wb_op: WBop::NOP,
@@ -118,7 +116,6 @@ impl CPU {
                         (
                             MEM_WB_RF {
                                 valid: true,
-                                flush: false,
                                 arith_result: None,
                                 ptr_result: None,
                                 wb_op: WBop::NOP,
@@ -134,7 +131,6 @@ impl CPU {
                         (
                             MEM_WB_RF {
                                 valid: true,
-                                flush: false,
                                 arith_result: None,
                                 ptr_result: None,
                                 wb_op: WBop::NOP,
@@ -149,7 +145,6 @@ impl CPU {
                         (
                             MEM_WB_RF {
                                 valid: true,
-                                flush: false,
                                 arith_result: None,
                                 ptr_result: fmem.mem_read_fptr(paddr),
                                 wb_op: agu_mem_rf.get_wb_op(),
@@ -170,7 +165,6 @@ impl CPU {
                         (
                             MEM_WB_RF {
                                 valid: true,
-                                flush: false,
                                 arith_result: None,
                                 ptr_result: None,
                                 wb_op: WBop::NOP,
@@ -185,7 +179,6 @@ impl CPU {
                         (
                             MEM_WB_RF {
                                 valid: true,
-                                flush: false,
                                 arith_result: None,
                                 ptr_result: None,
                                 wb_op: WBop::NOP,
@@ -201,7 +194,6 @@ impl CPU {
                         (
                             MEM_WB_RF {
                                 valid: true,
-                                flush: false,
                                 arith_result: None,
                                 ptr_result: None,
                                 wb_op: WBop::NOP,
