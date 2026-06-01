@@ -1,8 +1,8 @@
 use crate::cpu::RF::arch_rf;
+use crate::cpu::imem::IMEM;
 use crate::cpu::pimcpu_types::{CPU_stages, arch_action, inst};
 use crate::cpu::pipeline::CPU;
 use crate::cpu::signal_scoreboard::{pipeline_action, signal_reason, signal_req};
-use crate::cpu::imem::IMEM;
 
 pub struct IF_ID_rf {
     valid: bool,
@@ -39,7 +39,9 @@ impl CPU {
         (
             IF_ID_rf {
                 valid: true,
-                fetched_inst: imem.read_inst(pc_).expect("No instruction exists in pc: {pc_}"),
+                fetched_inst: imem
+                    .read_inst(pc_)
+                    .expect("No instruction exists in pc: {pc_}"),
                 pc: pc_,
             },
             signal_req::new(signal_reason::no_reason, CPU_stages::IF, None),
