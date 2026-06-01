@@ -2,7 +2,6 @@ use crate::cpu::pimcpu_types::{AGUop, ALUop, CPU_stages, DMAop, WBop, arch_actio
 use crate::cpu::pipeline::CPU;
 
 use crate::cpu::ID::ID_EX_rf;
-use crate::cpu::RF::arch_rf;
 use crate::cpu::signal_scoreboard::{SigFSM, pipeline_action, signal_reason, signal_req};
 
 use std::collections::{HashMap, HashSet};
@@ -54,6 +53,28 @@ impl EX_AGU_rf {
 
 impl CPU {
     pub fn eval_EX(&self, idex_rf: &ID_EX_rf) -> (EX_AGU_rf, signal_req, Vec<arch_action>) {
+        let raw_stall_from_ex = || {
+            let ex_agu_next = EX_AGU_rf {
+                valid: false,
+                arith_result: None,
+                agu_op: AGUop::NOP,
+                dma_op: DMAop::NOP,
+                wb_op: WBop::NOP,
+            };
+            (
+                ex_agu_next,
+                signal_req::new(
+                    signal_reason::RAW_resolution,
+                    CPU_stages::EX,
+                    Some(HashSet::<CPU_stages>::from([
+                        CPU_stages::IF,
+                        CPU_stages::ID,
+                    ])),
+                ),
+                [arch_action::DoNothing].to_vec(),
+            )
+        };
+
         if !idex_rf.is_valid() {
             (
                 EX_AGU_rf {
@@ -72,14 +93,25 @@ impl CPU {
                     EX_AGU_rf {
                         valid: true,
                         arith_result: None,
-                        agu_op: AGUop::NOP,
-                        dma_op: DMAop::NOP,
-                        wb_op: WBop::NOP,
+                        agu_op: idex_rf.get_agu_op(),
+                        dma_op: idex_rf.get_dma_op(),
+                        wb_op: idex_rf.get_wb_op(),
                     },
                     signal_req::new(signal_reason::no_reason, CPU_stages::EX, None),
                     [arch_action::DoNothing].to_vec(),
                 ),
-                ALUop::ADD { rs1_lit, rs2_lit } => {
+                ALUop::ADD {
+                    rs1,
+                    rs2,
+                    rs1_lit,
+                    rs2_lit,
+                } => {
+                    let Some(rs1_lit) = self.ex_bypass_get_rs1(rs1, rs1_lit) else {
+                        return raw_stall_from_ex();
+                    };
+                    let Some(rs2_lit) = self.ex_bypass_get_rs2(rs2, rs2_lit) else {
+                        return raw_stall_from_ex();
+                    };
                     let mut tmp_result: [u32; 4] = [0; 4];
 
                     for i in 0..4 {
@@ -98,7 +130,18 @@ impl CPU {
                         [arch_action::DoNothing].to_vec(),
                     )
                 }
-                ALUop::SUB { rs1_lit, rs2_lit } => {
+                ALUop::SUB {
+                    rs1,
+                    rs2,
+                    rs1_lit,
+                    rs2_lit,
+                } => {
+                    let Some(rs1_lit) = self.ex_bypass_get_rs1(rs1, rs1_lit) else {
+                        return raw_stall_from_ex();
+                    };
+                    let Some(rs2_lit) = self.ex_bypass_get_rs2(rs2, rs2_lit) else {
+                        return raw_stall_from_ex();
+                    };
                     let mut tmp_result: [u32; 4] = [0; 4];
 
                     for i in 0..4 {
@@ -117,7 +160,18 @@ impl CPU {
                         [arch_action::DoNothing].to_vec(),
                     )
                 }
-                ALUop::AND { rs1_lit, rs2_lit } => {
+                ALUop::AND {
+                    rs1,
+                    rs2,
+                    rs1_lit,
+                    rs2_lit,
+                } => {
+                    let Some(rs1_lit) = self.ex_bypass_get_rs1(rs1, rs1_lit) else {
+                        return raw_stall_from_ex();
+                    };
+                    let Some(rs2_lit) = self.ex_bypass_get_rs2(rs2, rs2_lit) else {
+                        return raw_stall_from_ex();
+                    };
                     let mut tmp_result: [u32; 4] = [0; 4];
 
                     for i in 0..4 {
@@ -136,7 +190,18 @@ impl CPU {
                         [arch_action::DoNothing].to_vec(),
                     )
                 }
-                ALUop::MUL { rs1_lit, rs2_lit } => {
+                ALUop::MUL {
+                    rs1,
+                    rs2,
+                    rs1_lit,
+                    rs2_lit,
+                } => {
+                    let Some(rs1_lit) = self.ex_bypass_get_rs1(rs1, rs1_lit) else {
+                        return raw_stall_from_ex();
+                    };
+                    let Some(rs2_lit) = self.ex_bypass_get_rs2(rs2, rs2_lit) else {
+                        return raw_stall_from_ex();
+                    };
                     let mut tmp_result: [u32; 4] = [0; 4];
 
                     for i in 0..4 {
@@ -155,7 +220,18 @@ impl CPU {
                         [arch_action::DoNothing].to_vec(),
                     )
                 }
-                ALUop::TEST { rs1_lit, rs2_lit } => {
+                ALUop::TEST {
+                    rs1,
+                    rs2,
+                    rs1_lit,
+                    rs2_lit,
+                } => {
+                    let Some(rs1_lit) = self.ex_bypass_get_rs1(rs1, rs1_lit) else {
+                        return raw_stall_from_ex();
+                    };
+                    let Some(rs2_lit) = self.ex_bypass_get_rs2(rs2, rs2_lit) else {
+                        return raw_stall_from_ex();
+                    };
                     let mut equal: bool = true;
 
                     for i in 0..4 {
@@ -265,4 +341,52 @@ impl EX_stop_FSM {
             state_next: EX_stop_FSM_states::Drain_MEM,
         }
     }
+}
+
+#[derive(Clone, Copy)]
+enum RAW_resolution_FSM_state {
+    Stall,
+    Idle,
+}
+
+#[derive(Clone, Copy)]
+pub struct RAW_resolution_FSM {
+    state: RAW_resolution_FSM_state,
+}
+
+impl RAW_resolution_FSM {
+    pub const fn new() -> Self {
+        Self {
+            state: RAW_resolution_FSM_state::Stall,
+        }
+    }
+}
+
+impl SigFSM for RAW_resolution_FSM {
+    fn reason(&self) -> signal_reason {
+        signal_reason::RAW_resolution
+    }
+
+    fn action(&self) -> pipeline_action {
+        match self.state {
+            RAW_resolution_FSM_state::Stall => pipeline_action::Stall,
+            RAW_resolution_FSM_state::Idle => pipeline_action::Normal,
+        }
+    }
+
+    fn get_ops(&self) -> HashMap<CPU_stages, pipeline_action> {
+        HashMap::<CPU_stages, pipeline_action>::from([
+            (CPU_stages::IF, pipeline_action::Stall),
+            (CPU_stages::ID, pipeline_action::Stall),
+            (CPU_stages::EX, pipeline_action::Stall),
+            (CPU_stages::AGU, pipeline_action::Stall),
+        ])
+    }
+
+    fn advance_winner(&mut self) -> bool {
+        self.state = RAW_resolution_FSM_state::Idle;
+        true
+    }
+
+    fn handle_blocked(&mut self) {}
 }

@@ -121,22 +121,32 @@ impl Ord for CPU_stages {
 pub enum ALUop {
     NOP,
     ADD {
+        rs1: u8,
+        rs2: u8,
         rs1_lit: [u32; 4],
         rs2_lit: [u32; 4],
     },
     SUB {
+        rs1: u8,
+        rs2: u8,
         rs1_lit: [u32; 4],
         rs2_lit: [u32; 4],
     },
     AND {
+        rs1: u8,
+        rs2: u8,
         rs1_lit: [u32; 4],
         rs2_lit: [u32; 4],
     },
     MUL {
+        rs1: u8,
+        rs2: u8,
         rs1_lit: [u32; 4],
         rs2_lit: [u32; 4],
     },
     TEST {
+        rs1: u8,
+        rs2: u8,
         rs1_lit: [u32; 4],
         rs2_lit: [u32; 4],
     },
@@ -146,14 +156,19 @@ pub enum ALUop {
 pub enum AGUop {
     NOP,
     CHK {
+        frs: u8,
         fptr_lit: fatptr_rf,
     },
     ADD {
+        frs: u8,
+        rs1: u8,
         fptr_lit: fatptr_rf,
         rs1_lit: [u32; 4],
         idx_imm: u8,
     },
     SUB {
+        frs: u8,
+        rs1: u8,
         fptr_lit: fatptr_rf,
         rs1_lit: [u32; 4],
         idx_imm: u8,
@@ -163,10 +178,10 @@ pub enum AGUop {
 #[derive(Clone, Copy)]
 pub enum DMAop {
     NOP,
-    READ_VEC,
-    WRITE_VEC { data_lit: [u32; 4] },
-    READ_FPTR,
-    WRITE_FPTR { fptr_data_lit: fatptr_rf },
+    READ_VEC { rd: u8 },
+    WRITE_VEC { rs: u8, data_lit: [u32; 4] },
+    READ_FPTR { frd: u8 },
+    WRITE_FPTR { frs: u8, fptr_data_lit: fatptr_rf },
 }
 
 #[derive(Clone, Copy)]

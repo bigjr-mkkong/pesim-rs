@@ -89,6 +89,8 @@ impl CPU {
                     ID_EX_rf {
                         valid: true,
                         alu_op: ALUop::ADD {
+                            rs1,
+                            rs2,
                             rs1_lit: arf.read_vregs(rs1),
                             rs2_lit: arf.read_vregs(rs2),
                         },
@@ -104,6 +106,8 @@ impl CPU {
                     ID_EX_rf {
                         valid: true,
                         alu_op: ALUop::SUB {
+                            rs1,
+                            rs2,
                             rs1_lit: arf.read_vregs(rs1),
                             rs2_lit: arf.read_vregs(rs2),
                         },
@@ -119,6 +123,8 @@ impl CPU {
                     ID_EX_rf {
                         valid: true,
                         alu_op: ALUop::MUL {
+                            rs1,
+                            rs2,
                             rs1_lit: arf.read_vregs(rs1),
                             rs2_lit: arf.read_vregs(rs2),
                         },
@@ -134,6 +140,8 @@ impl CPU {
                     ID_EX_rf {
                         valid: true,
                         alu_op: ALUop::AND {
+                            rs1,
+                            rs2,
                             rs1_lit: arf.read_vregs(rs1),
                             rs2_lit: arf.read_vregs(rs2),
                         },
@@ -149,11 +157,12 @@ impl CPU {
                         valid: true,
                         alu_op: ALUop::NOP,
                         agu_op: AGUop::CHK {
+                            frs,
                             fptr_lit: arf
                                 .read_fregs(frs)
                                 .expect("ID: Unable to load from invalid FPTR"),
                         },
-                        dma_op: DMAop::READ_VEC,
+                        dma_op: DMAop::READ_VEC { rd },
                         wb_op: WBop::WB_VEC { rd: rd },
                     },
                     signal_req::new(signal_reason::no_reason, CPU_stages::ID, None),
@@ -164,12 +173,14 @@ impl CPU {
                         valid: true,
                         alu_op: ALUop::NOP,
                         agu_op: AGUop::CHK {
+                            frs: frd,
                             fptr_lit: arf
                                 .read_fregs(frd)
                                 .expect("ID: Unable to load from invalid FPTR"),
                         },
 
                         dma_op: DMAop::WRITE_VEC {
+                            rs,
                             data_lit: arf.read_vregs(rs),
                         },
                         wb_op: WBop::NOP,
@@ -182,11 +193,12 @@ impl CPU {
                         valid: true,
                         alu_op: ALUop::NOP,
                         agu_op: AGUop::CHK {
+                            frs,
                             fptr_lit: arf
                                 .read_fregs(frs)
                                 .expect("ID: Unable to load from invalid FPTR"),
                         },
-                        dma_op: DMAop::READ_FPTR,
+                        dma_op: DMAop::READ_FPTR { frd },
                         wb_op: WBop::WB_FPTR { frd: frd },
                     },
                     signal_req::new(signal_reason::no_reason, CPU_stages::ID, None),
@@ -197,11 +209,13 @@ impl CPU {
                         valid: true,
                         alu_op: ALUop::NOP,
                         agu_op: AGUop::CHK {
+                            frs,
                             fptr_lit: arf
                                 .read_fregs(frs)
                                 .expect("ID: Unable to load from invalid FPTR"),
                         },
                         dma_op: DMAop::WRITE_FPTR {
+                            frs: frd,
                             fptr_data_lit: arf
                                 .read_fregs(frd)
                                 .expect("ID: Unable to load from invalid FPTR"),
@@ -221,6 +235,8 @@ impl CPU {
                         valid: true,
                         alu_op: ALUop::NOP,
                         agu_op: AGUop::ADD {
+                            frs,
+                            rs1,
                             fptr_lit: arf
                                 .read_fregs(frs)
                                 .expect("ID: Unable to load from invalid FPTR"),
@@ -243,6 +259,8 @@ impl CPU {
                         valid: true,
                         alu_op: ALUop::NOP,
                         agu_op: AGUop::SUB {
+                            frs,
+                            rs1,
                             fptr_lit: arf
                                 .read_fregs(frs)
                                 .expect("ID: Unable to load from invalid FPTR"),
@@ -274,6 +292,8 @@ impl CPU {
                     ID_EX_rf {
                         valid: true,
                         alu_op: ALUop::TEST {
+                            rs1,
+                            rs2: rd,
                             rs1_lit: arf.read_vregs(rs1),
                             rs2_lit: arf.read_vregs(rd),
                         },

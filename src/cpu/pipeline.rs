@@ -3,7 +3,7 @@ use crate::cpu::imem::IMEM;
 use crate::cpu::pimcpu_types::{CPU_stages, arch_action};
 
 use crate::cpu::AGU::{AGU_MEM_rf, AGU_stop_FSM};
-use crate::cpu::EX::{EX_AGU_rf, EX_stop_FSM};
+use crate::cpu::EX::{EX_AGU_rf, EX_stop_FSM, RAW_resolution_FSM};
 use crate::cpu::ID::{ID_EX_rf, ID_jump_FSM};
 use crate::cpu::IF::IF_ID_rf;
 use crate::cpu::MEM::{MEM_WB_RF, MEM_stop_FSM};
@@ -14,17 +14,17 @@ use crate::memory::flat_memory::flat_mem;
 pub const PC_TESTING: u16 = 0xffff;
 
 pub struct CPU {
-    imem: IMEM,
-    RF: arch_rf,
+    pub(crate) imem: IMEM,
+    pub(crate) RF: arch_rf,
 
-    if_id_rf: IF_ID_rf,
-    id_ex_rf: ID_EX_rf,
-    ex_agu_rf: EX_AGU_rf,
-    agu_mem_rf: AGU_MEM_rf,
-    mem_wb_rf: MEM_WB_RF,
-    pipeline_ctrl: sig_resolver,
-    agu: AGU_unit,
-    fmem: flat_mem,
+    pub(crate) if_id_rf: IF_ID_rf,
+    pub(crate) id_ex_rf: ID_EX_rf,
+    pub(crate) ex_agu_rf: EX_AGU_rf,
+    pub(crate) agu_mem_rf: AGU_MEM_rf,
+    pub(crate) mem_wb_rf: MEM_WB_RF,
+    pub(crate) pipeline_ctrl: sig_resolver,
+    pub(crate) agu: AGU_unit,
+    pub(crate) fmem: flat_mem,
 }
 
 impl CPU {
@@ -34,6 +34,10 @@ impl CPU {
         pipeline_ctrl.add_new_fsm(signal_reason::prog_end, Box::new(EX_stop_FSM::new()));
         pipeline_ctrl.add_new_fsm(signal_reason::exception, Box::new(AGU_stop_FSM::new()));
         pipeline_ctrl.add_new_fsm(signal_reason::MEM_block, Box::new(MEM_stop_FSM::new()));
+        pipeline_ctrl.add_new_fsm(
+            signal_reason::RAW_resolution,
+            Box::new(RAW_resolution_FSM::new()),
+        );
 
         Self {
             imem: IMEM::new(),

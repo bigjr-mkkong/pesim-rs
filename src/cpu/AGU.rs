@@ -1,4 +1,4 @@
-use crate::cpu::pimcpu_types::{AGUop, ALUop, CPU_stages, DMAop, WBop, arch_action, fatptr_rf};
+use crate::cpu::pimcpu_types::{AGUop, CPU_stages, DMAop, WBop, arch_action, fatptr_rf};
 use crate::cpu::pipeline::CPU;
 
 use crate::cpu::EX::EX_AGU_rf;
@@ -66,6 +66,30 @@ impl CPU {
         ex_agu_rf: &EX_AGU_rf,
         agu: &AGU_unit,
     ) -> (AGU_MEM_rf, signal_req, Vec<arch_action>) {
+        let raw_stall_from_agu = || {
+            let agu_mem_next = AGU_MEM_rf {
+                valid: false,
+                phys_addr: None,
+                arith_in: None,
+                ptr_result: None,
+                dma_op: DMAop::NOP,
+                wb_op: WBop::NOP,
+            };
+            (
+                agu_mem_next,
+                signal_req::new(
+                    signal_reason::RAW_resolution,
+                    CPU_stages::AGU,
+                    Some(HashSet::<CPU_stages>::from([
+                        CPU_stages::IF,
+                        CPU_stages::ID,
+                        CPU_stages::EX,
+                    ])),
+                ),
+                [arch_action::DoNothing].to_vec(),
+            )
+        };
+
         if !ex_agu_rf.is_valid() {
             (
                 AGU_MEM_rf {
@@ -81,19 +105,30 @@ impl CPU {
             )
         } else {
             match ex_agu_rf.get_agu_op() {
-                AGUop::NOP => (
-                    AGU_MEM_rf {
-                        valid: true,
-                        phys_addr: None,
-                        arith_in: None,
-                        ptr_result: None,
-                        dma_op: DMAop::NOP,
-                        wb_op: WBop::NOP,
-                    },
-                    signal_req::new(signal_reason::no_reason, CPU_stages::AGU, None),
-                    [arch_action::DoNothing].to_vec(),
-                ),
-                AGUop::CHK { fptr_lit } => {
+                AGUop::NOP => {
+                    let Some(dma_op) = self.agu_bypass_dma_op(ex_agu_rf.get_dma_op()) else {
+                        return raw_stall_from_agu();
+                    };
+                    (
+                        AGU_MEM_rf {
+                            valid: true,
+                            phys_addr: None,
+                            arith_in: ex_agu_rf.get_arith_result(),
+                            ptr_result: None,
+                            dma_op,
+                            wb_op: ex_agu_rf.get_wb_op(),
+                        },
+                        signal_req::new(signal_reason::no_reason, CPU_stages::AGU, None),
+                        [arch_action::DoNothing].to_vec(),
+                    )
+                }
+                AGUop::CHK { frs, fptr_lit } => {
+                    let Some(fptr_lit) = self.agu_bypass_get_frs(frs, fptr_lit) else {
+                        return raw_stall_from_agu();
+                    };
+                    let Some(dma_op) = self.agu_bypass_dma_op(ex_agu_rf.get_dma_op()) else {
+                        return raw_stall_from_agu();
+                    };
                     if agu.accept(fptr_lit) {
                         (
                             AGU_MEM_rf {
@@ -101,7 +136,7 @@ impl CPU {
                                 phys_addr: agu.translate(fptr_lit),
                                 arith_in: ex_agu_rf.get_arith_result(),
                                 ptr_result: None,
-                                dma_op: ex_agu_rf.get_dma_op(),
+                                dma_op,
                                 wb_op: ex_agu_rf.get_wb_op(),
                             },
                             signal_req::new(signal_reason::no_reason, CPU_stages::AGU, None),
@@ -131,10 +166,21 @@ impl CPU {
                     }
                 }
                 AGUop::ADD {
+                    frs,
+                    rs1,
                     fptr_lit,
                     rs1_lit,
                     idx_imm,
                 } => {
+                    let Some(fptr_lit) = self.agu_bypass_get_frs(frs, fptr_lit) else {
+                        return raw_stall_from_agu();
+                    };
+                    let Some(rs1_lit) = self.agu_bypass_get_rs1(rs1, rs1_lit) else {
+                        return raw_stall_from_agu();
+                    };
+                    let Some(dma_op) = self.agu_bypass_dma_op(ex_agu_rf.get_dma_op()) else {
+                        return raw_stall_from_agu();
+                    };
                     let fptr_ = agu.addition(fptr_lit, rs1_lit, idx_imm);
                     if let Some(new_fptr) = fptr_ {
                         (
@@ -143,7 +189,7 @@ impl CPU {
                                 phys_addr: None,
                                 arith_in: ex_agu_rf.get_arith_result(),
                                 ptr_result: Some(new_fptr),
-                                dma_op: ex_agu_rf.get_dma_op(),
+                                dma_op,
                                 wb_op: ex_agu_rf.get_wb_op(),
                             },
                             signal_req::new(signal_reason::no_reason, CPU_stages::AGU, None),
@@ -173,10 +219,21 @@ impl CPU {
                     }
                 }
                 AGUop::SUB {
+                    frs,
+                    rs1,
                     fptr_lit,
                     rs1_lit,
                     idx_imm,
                 } => {
+                    let Some(fptr_lit) = self.agu_bypass_get_frs(frs, fptr_lit) else {
+                        return raw_stall_from_agu();
+                    };
+                    let Some(rs1_lit) = self.agu_bypass_get_rs1(rs1, rs1_lit) else {
+                        return raw_stall_from_agu();
+                    };
+                    let Some(dma_op) = self.agu_bypass_dma_op(ex_agu_rf.get_dma_op()) else {
+                        return raw_stall_from_agu();
+                    };
                     let fptr_ = agu.subtraction(fptr_lit, rs1_lit, idx_imm);
                     if let Some(new_fptr) = fptr_ {
                         (
@@ -185,7 +242,7 @@ impl CPU {
                                 phys_addr: None,
                                 arith_in: ex_agu_rf.get_arith_result(),
                                 ptr_result: Some(new_fptr),
-                                dma_op: ex_agu_rf.get_dma_op(),
+                                dma_op,
                                 wb_op: ex_agu_rf.get_wb_op(),
                             },
                             signal_req::new(signal_reason::no_reason, CPU_stages::AGU, None),

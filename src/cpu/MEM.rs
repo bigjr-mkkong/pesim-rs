@@ -1,11 +1,11 @@
-use crate::cpu::pimcpu_types::{AGUop, ALUop, CPU_stages, DMAop, WBop, arch_action, fatptr_rf};
+use crate::cpu::pimcpu_types::{CPU_stages, DMAop, WBop, arch_action, fatptr_rf};
 use crate::cpu::pipeline::CPU;
 use crate::cpu::signal_scoreboard::{SigFSM, pipeline_action, signal_reason, signal_req};
 
 use crate::cpu::AGU::AGU_MEM_rf;
 use std::collections::{HashMap, HashSet};
 
-use crate::memory::flat_memory::{dram_entry, flat_mem};
+use crate::memory::flat_memory::flat_mem;
 
 pub struct MEM_WB_RF {
     valid: bool,
@@ -70,14 +70,14 @@ impl CPU {
                 DMAop::NOP => (
                     MEM_WB_RF {
                         valid: true,
-                        arith_result: None,
-                        ptr_result: None,
-                        wb_op: WBop::NOP,
+                        arith_result: agu_mem_rf.get_arith_in(),
+                        ptr_result: agu_mem_rf.get_ptr_result(),
+                        wb_op: agu_mem_rf.get_wb_op(),
                     },
                     signal_req::new(signal_reason::no_reason, CPU_stages::MEM, None),
                     [arch_action::DoNothing].to_vec(),
                 ),
-                DMAop::READ_VEC => {
+                DMAop::READ_VEC { .. } => {
                     if let Some(paddr) = agu_mem_rf.get_phys_addr() {
                         (
                             MEM_WB_RF {
@@ -111,7 +111,7 @@ impl CPU {
                         )
                     }
                 }
-                DMAop::WRITE_VEC { data_lit } => {
+                DMAop::WRITE_VEC { data_lit, .. } => {
                     if let Some(paddr) = agu_mem_rf.get_phys_addr() {
                         (
                             MEM_WB_RF {
@@ -140,7 +140,7 @@ impl CPU {
                         )
                     }
                 }
-                DMAop::READ_FPTR => {
+                DMAop::READ_FPTR { .. } => {
                     if let Some(paddr) = agu_mem_rf.get_phys_addr() {
                         (
                             MEM_WB_RF {
@@ -174,7 +174,7 @@ impl CPU {
                         )
                     }
                 }
-                DMAop::WRITE_FPTR { fptr_data_lit } => {
+                DMAop::WRITE_FPTR { fptr_data_lit, .. } => {
                     if let Some(paddr) = agu_mem_rf.get_phys_addr() {
                         (
                             MEM_WB_RF {
