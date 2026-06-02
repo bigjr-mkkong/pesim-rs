@@ -1,6 +1,7 @@
 use crate::cpu::pimcpu_types::{CPU_stages, DMAop, WBop, arch_action, fatptr_rf};
 use crate::cpu::pipeline::CPU;
 use crate::cpu::signal_scoreboard::{SigFSM, pipeline_action, signal_reason, signal_req};
+use rand::random_bool;
 
 use crate::cpu::AGU::AGU_MEM_rf;
 use std::collections::{HashMap, HashSet};
@@ -243,7 +244,8 @@ impl SigFSM for MEM_stop_FSM {
     }
 
     fn advance_winner(&mut self) -> bool {
-        let op_finished = true; //For ideal MEM operation always finished immediately
+        //Simulate the randomness of DRAM
+        let op_finished = random_bool(0.1);
         self.state_next = match self.state {
             MEM_stop_FSM_states::STALL => {
                 if op_finished {

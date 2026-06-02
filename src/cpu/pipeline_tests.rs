@@ -1,3 +1,5 @@
+use crate::CPU;
+use crate::cpu::pimcpu_types::{fatptr_rf,inst};
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -22,7 +24,7 @@ mod tests {
 
         pimcpu.get_imem().flash_in(&prog);
 
-        for _cycle in 0..30 {
+        for _cycle in 0..1000 {
             pimcpu.tick();
         }
 
@@ -61,7 +63,7 @@ mod tests {
 
         pimcpu.get_imem().flash_in(&prog);
 
-        for _cycle in 0..30 {
+        for _cycle in 0..1000 {
             pimcpu.tick();
         }
 
@@ -100,7 +102,7 @@ mod tests {
 
         pimcpu.get_imem().flash_in(&prog);
 
-        for _cycle in 0..30 {
+        for _cycle in 0..1000 {
             pimcpu.tick();
         }
 
@@ -147,7 +149,7 @@ mod tests {
 
         pimcpu.get_imem().flash_in(&prog);
 
-        for _cycle in 0..30 {
+        for _cycle in 0..1000 {
             pimcpu.tick();
         }
 
@@ -190,7 +192,7 @@ mod tests {
 
         pimcpu.get_imem().flash_in(&prog);
 
-        for _ in 0..30 {
+        for _ in 0..1000 {
             pimcpu.tick();
         }
 
@@ -238,7 +240,7 @@ mod tests {
 
         pimcpu.get_imem().flash_in(&prog);
 
-        for _ in 0..40 {
+        for _ in 0..1000 {
             pimcpu.tick();
         }
 
@@ -276,7 +278,7 @@ mod tests {
 
         pimcpu.get_imem().flash_in(&prog);
 
-        for _ in 0..30 {
+        for _ in 0..1000 {
             pimcpu.tick();
         }
 
@@ -314,7 +316,7 @@ mod tests {
 
         pimcpu.get_imem().flash_in(&prog);
 
-        for _ in 0..30 {
+        for _ in 0..1000 {
             pimcpu.tick();
         }
 
@@ -357,7 +359,7 @@ mod tests {
 
         pimcpu.get_imem().flash_in(&prog);
 
-        for _ in 0..40 {
+        for _ in 0..1000 {
             pimcpu.tick();
         }
 
@@ -386,7 +388,7 @@ mod tests {
 
         pimcpu.get_imem().flash_in(&prog);
 
-        for _ in 0..100 {
+        for _ in 0..1000 {
             pimcpu.tick();
         }
 
@@ -428,7 +430,7 @@ mod tests {
 
         pimcpu.get_imem().flash_in(&prog);
 
-        for _ in 0..30 {
+        for _ in 0..1000 {
             pimcpu.tick();
         }
 
