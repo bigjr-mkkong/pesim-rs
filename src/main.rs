@@ -37,3 +37,4 @@ fn main() {
 mod cpu;
 mod errors;
 mod memory;
+mod sim_engine;
