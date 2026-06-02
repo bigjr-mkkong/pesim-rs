@@ -70,7 +70,9 @@ impl signal_req {
 pub trait SigFSM: SigFSMClone {
     fn reason(&self) -> signal_reason;
 
-    //action should return Normal when reaching the finish state
+    // action is the arbitration class used to rank this signal.  The actual
+    // per-stage operation bundle returned by get_ops may contain mixed actions.
+    // action should return Normal when reaching the finish state.
     fn action(&self) -> pipeline_action;
 
     fn get_ops(&self) -> HashMap<CPU_stages, pipeline_action>;

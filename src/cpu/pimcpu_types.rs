@@ -1,5 +1,5 @@
 use crate::memory::AGU_unit::{BOUND_BITS, IDX_BITS};
-#[derive(Copy, Clone, PartialEq, Eq, Hash)]
+#[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
 pub struct fatptr_rf {
     tag: u8,
     offset: u32,
