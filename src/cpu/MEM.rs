@@ -70,7 +70,7 @@ impl CPU {
                 DMAop::NOP => (
                     MEM_WB_RF {
                         valid: true,
-                        arith_result: agu_mem_rf.get_arith_in(),
+                        arith_result: agu_mem_rf.get_arith_result(),
                         ptr_result: agu_mem_rf.get_ptr_result(),
                         wb_op: agu_mem_rf.get_wb_op(),
                     },

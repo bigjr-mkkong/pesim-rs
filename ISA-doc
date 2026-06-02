@@ -2,6 +2,9 @@ Hardware Resouces:
 8 128-bit vector RF(vRF)
 8 fatptr RF(ptr_RF)
 
+vRF[0] hardwired to 0
+ptr_RF does not have this limitation
+
 Instructions:
 NOP => NOP
 ADD128  A, B, C             => vRF[A] = vRF[B] + vRF[C]

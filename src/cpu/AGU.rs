@@ -11,7 +11,7 @@ pub struct AGU_MEM_rf {
     valid: bool,
 
     phys_addr: Option<u32>,
-    arith_in: Option<[u32; 4]>,
+    arith_result: Option<[u32; 4]>,
     ptr_result: Option<fatptr_rf>,
 
     dma_op: DMAop,
@@ -23,7 +23,7 @@ impl AGU_MEM_rf {
         Self {
             valid: false,
             phys_addr: None,
-            arith_in: None,
+            arith_result: None,
             ptr_result: None,
 
             dma_op: DMAop::NOP,
@@ -43,8 +43,8 @@ impl AGU_MEM_rf {
         self.phys_addr
     }
 
-    pub fn get_arith_in(&self) -> Option<[u32; 4]> {
-        self.arith_in
+    pub fn get_arith_result(&self) -> Option<[u32; 4]> {
+        self.arith_result
     }
 
     pub fn get_ptr_result(&self) -> Option<fatptr_rf> {
@@ -70,7 +70,7 @@ impl CPU {
             let agu_mem_next = AGU_MEM_rf {
                 valid: false,
                 phys_addr: None,
-                arith_in: None,
+                arith_result: None,
                 ptr_result: None,
                 dma_op: DMAop::NOP,
                 wb_op: WBop::NOP,
@@ -95,7 +95,7 @@ impl CPU {
                 AGU_MEM_rf {
                     valid: false,
                     phys_addr: None,
-                    arith_in: None,
+                    arith_result: None,
                     ptr_result: None,
                     dma_op: DMAop::NOP,
                     wb_op: WBop::NOP,
@@ -113,7 +113,7 @@ impl CPU {
                         AGU_MEM_rf {
                             valid: true,
                             phys_addr: None,
-                            arith_in: ex_agu_rf.get_arith_result(),
+                            arith_result: ex_agu_rf.get_arith_result(),
                             ptr_result: None,
                             dma_op,
                             wb_op: ex_agu_rf.get_wb_op(),
@@ -134,7 +134,7 @@ impl CPU {
                             AGU_MEM_rf {
                                 valid: true,
                                 phys_addr: agu.translate(fptr_lit),
-                                arith_in: ex_agu_rf.get_arith_result(),
+                                arith_result: ex_agu_rf.get_arith_result(),
                                 ptr_result: None,
                                 dma_op,
                                 wb_op: ex_agu_rf.get_wb_op(),
@@ -147,7 +147,7 @@ impl CPU {
                             AGU_MEM_rf {
                                 valid: false,
                                 phys_addr: None,
-                                arith_in: None,
+                                arith_result: None,
                                 ptr_result: None,
                                 dma_op: DMAop::NOP,
                                 wb_op: WBop::NOP,
@@ -187,7 +187,7 @@ impl CPU {
                             AGU_MEM_rf {
                                 valid: true,
                                 phys_addr: None,
-                                arith_in: ex_agu_rf.get_arith_result(),
+                                arith_result: ex_agu_rf.get_arith_result(),
                                 ptr_result: Some(new_fptr),
                                 dma_op,
                                 wb_op: ex_agu_rf.get_wb_op(),
@@ -200,7 +200,7 @@ impl CPU {
                             AGU_MEM_rf {
                                 valid: false,
                                 phys_addr: None,
-                                arith_in: None,
+                                arith_result: None,
                                 ptr_result: None,
                                 dma_op: DMAop::NOP,
                                 wb_op: WBop::NOP,
@@ -240,7 +240,7 @@ impl CPU {
                             AGU_MEM_rf {
                                 valid: true,
                                 phys_addr: None,
-                                arith_in: ex_agu_rf.get_arith_result(),
+                                arith_result: ex_agu_rf.get_arith_result(),
                                 ptr_result: Some(new_fptr),
                                 dma_op,
                                 wb_op: ex_agu_rf.get_wb_op(),
@@ -253,7 +253,7 @@ impl CPU {
                             AGU_MEM_rf {
                                 valid: false,
                                 phys_addr: None,
-                                arith_in: None,
+                                arith_result: None,
                                 ptr_result: None,
                                 dma_op: DMAop::NOP,
                                 wb_op: WBop::NOP,

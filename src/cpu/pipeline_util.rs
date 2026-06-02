@@ -61,9 +61,9 @@ impl CPU {
     }
 
     pub fn agu_bypass_get_frs(&self, frs: u8, frs_lit: fatptr_rf) -> Option<fatptr_rf> {
-        if frs == 0 {
-            return Some(frs_lit);
-        }
+        // if frs == 0 {
+        //     return Some(frs_lit);
+        // }
 
         if self.agu_mem_rf.is_valid() {
             if let WBop::WB_FPTR { frd } = self.agu_mem_rf.get_wb_op() {
@@ -98,7 +98,7 @@ impl CPU {
                     if matches!(self.agu_mem_rf.get_dma_op(), DMAop::READ_VEC { .. }) {
                         return None;
                     }
-                    return self.agu_mem_rf.get_arith_in();
+                    return self.agu_mem_rf.get_arith_result();
                 }
             }
         }
@@ -148,7 +148,7 @@ impl CPU {
                     if matches!(self.agu_mem_rf.get_dma_op(), DMAop::READ_VEC { .. }) {
                         return None;
                     }
-                    return self.agu_mem_rf.get_arith_in();
+                    return self.agu_mem_rf.get_arith_result();
                 }
             }
         }

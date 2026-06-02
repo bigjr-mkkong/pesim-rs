@@ -41,7 +41,7 @@ impl CPU {
                 valid: true,
                 fetched_inst: imem
                     .read_inst(pc_)
-                    .expect("No instruction exists in pc: {pc_}"),
+                    .unwrap_or(inst::NOP),
                 pc: pc_,
             },
             signal_req::new(signal_reason::no_reason, CPU_stages::IF, None),

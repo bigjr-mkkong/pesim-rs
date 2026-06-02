@@ -61,6 +61,14 @@ impl CPU {
         &mut self.fmem
     }
 
+    pub fn get_imem(&mut self) -> &mut IMEM {
+        &mut self.imem
+    }
+
+    pub fn get_agu(&mut self) -> &mut AGU_unit{
+        &mut self.agu
+    }
+
     pub fn tick(&mut self) {
         let (_, wb_sigreq, wb_archop) = self.eval_WB(&self.mem_wb_rf);
         self.pipeline_ctrl.submit_signal(Some(wb_sigreq));
