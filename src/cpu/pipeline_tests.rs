@@ -1,5 +1,5 @@
 use crate::CPU;
-use crate::cpu::pimcpu_types::{fatptr_rf,inst};
+use crate::cpu::pimcpu_types::{fatptr_rf, inst};
 #[cfg(test)]
 mod tests {
     use super::*;

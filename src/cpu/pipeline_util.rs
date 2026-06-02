@@ -84,6 +84,14 @@ impl CPU {
             }
         }
 
+        if self.wb_forward_rf.is_valid() {
+            if let WBop::WB_FPTR { frd } = self.wb_forward_rf.get_wb_op() {
+                if frd == frs {
+                    return self.wb_forward_rf.get_ptr_result();
+                }
+            }
+        }
+
         Some(frs_lit)
     }
 
@@ -107,6 +115,14 @@ impl CPU {
             if let WBop::WB_VEC { rd } = self.mem_wb_rf.get_wb_op() {
                 if rd == rs1 {
                     return self.mem_wb_rf.get_arith_result();
+                }
+            }
+        }
+
+        if self.wb_forward_rf.is_valid() {
+            if let WBop::WB_VEC { rd } = self.wb_forward_rf.get_wb_op() {
+                if rd == rs1 {
+                    return self.wb_forward_rf.get_arith_result();
                 }
             }
         }
@@ -157,6 +173,14 @@ impl CPU {
             if let WBop::WB_VEC { rd } = self.mem_wb_rf.get_wb_op() {
                 if rd == rs {
                     return self.mem_wb_rf.get_arith_result();
+                }
+            }
+        }
+
+        if self.wb_forward_rf.is_valid() {
+            if let WBop::WB_VEC { rd } = self.wb_forward_rf.get_wb_op() {
+                if rd == rs {
+                    return self.wb_forward_rf.get_arith_result();
                 }
             }
         }

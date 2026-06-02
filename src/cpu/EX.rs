@@ -380,6 +380,9 @@ impl SigFSM for RAW_resolution_FSM {
             (CPU_stages::IF, pipeline_action::Stall),
             (CPU_stages::ID, pipeline_action::Stall),
             (CPU_stages::EX, pipeline_action::Stall),
+            // Hold WB while a RAW bubble is being inserted so the WB forwarding
+            // latch remains available to the dependent instruction.
+            (CPU_stages::WB, pipeline_action::Stall),
             // (CPU_stages::AGU, pipeline_action::Stall),
         ])
     }

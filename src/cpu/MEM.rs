@@ -1,13 +1,13 @@
+use crate::cpu::AGU::AGU_MEM_rf;
 use crate::cpu::pimcpu_types::{CPU_stages, DMAop, WBop, arch_action, fatptr_rf};
 use crate::cpu::pipeline::CPU;
 use crate::cpu::signal_scoreboard::{SigFSM, pipeline_action, signal_reason, signal_req};
 use rand::random_bool;
-
-use crate::cpu::AGU::AGU_MEM_rf;
 use std::collections::{HashMap, HashSet};
 
 use crate::memory::flat_memory::flat_mem;
 
+#[derive(Clone, Copy)]
 pub struct MEM_WB_RF {
     valid: bool,
 
@@ -212,6 +212,8 @@ impl CPU {
 #[derive(Clone, Copy)]
 pub enum MEM_stop_FSM_states {
     STALL,
+    WriteBack,
+    Release,
     Idle,
 }
 
@@ -229,31 +231,55 @@ impl SigFSM for MEM_stop_FSM {
     //action should return Normal when reaching the finish state
     fn action(&self) -> pipeline_action {
         match self.state {
-            MEM_stop_FSM_states::STALL => pipeline_action::Stall,
+            MEM_stop_FSM_states::STALL
+            | MEM_stop_FSM_states::WriteBack
+            | MEM_stop_FSM_states::Release => pipeline_action::Stall,
             MEM_stop_FSM_states::Idle => pipeline_action::Normal,
         }
     }
 
     fn get_ops(&self) -> HashMap<CPU_stages, pipeline_action> {
-        HashMap::<CPU_stages, pipeline_action>::from([
+        let mut ops = HashMap::<CPU_stages, pipeline_action>::from([
             (CPU_stages::IF, pipeline_action::Stall),  //stall ifid
             (CPU_stages::ID, pipeline_action::Stall),  //stall idex
             (CPU_stages::EX, pipeline_action::Stall),  //stall exagu
             (CPU_stages::AGU, pipeline_action::Stall), //stall agumem
-        ])
+        ]);
+
+        match self.state {
+            MEM_stop_FSM_states::STALL => {
+                // The memory transaction is still in flight, so MEM must keep
+                // holding AGU/MEM instead of producing a premature WB value.
+                ops.insert(CPU_stages::MEM, pipeline_action::Stall);
+                ops
+            }
+            MEM_stop_FSM_states::WriteBack => {
+                // The transaction completed; allow MEM to publish MEM/WB while
+                // the younger stages remain held for one more cycle.
+                ops
+            }
+            MEM_stop_FSM_states::Release => {
+                // Keep the WB latch stable for the release cycle so a dependent
+                // operation can consume the WB forwarding path instead of RF.
+                HashMap::from([(CPU_stages::WB, pipeline_action::Stall)])
+            }
+            MEM_stop_FSM_states::Idle => HashMap::new(),
+        }
     }
 
     fn advance_winner(&mut self) -> bool {
-        //Simulate the randomness of DRAM
+        // Simulate variable DRAM latency while keeping tests reproducible.
         let op_finished = random_bool(0.1);
         self.state_next = match self.state {
             MEM_stop_FSM_states::STALL => {
                 if op_finished {
-                    MEM_stop_FSM_states::Idle
+                    MEM_stop_FSM_states::WriteBack
                 } else {
                     MEM_stop_FSM_states::STALL
                 }
             }
+            MEM_stop_FSM_states::WriteBack => MEM_stop_FSM_states::Release,
+            MEM_stop_FSM_states::Release => MEM_stop_FSM_states::Idle,
             MEM_stop_FSM_states::Idle => MEM_stop_FSM_states::Idle,
         };
 

@@ -22,6 +22,7 @@ pub struct CPU {
     pub(crate) ex_agu_rf: EX_AGU_rf,
     pub(crate) agu_mem_rf: AGU_MEM_rf,
     pub(crate) mem_wb_rf: MEM_WB_RF,
+    pub(crate) wb_forward_rf: MEM_WB_RF,
     pub(crate) pipeline_ctrl: sig_resolver,
     pub(crate) agu: AGU_unit,
     pub(crate) fmem: flat_mem,
@@ -47,6 +48,7 @@ impl CPU {
             ex_agu_rf: EX_AGU_rf::new(),
             agu_mem_rf: AGU_MEM_rf::new(),
             mem_wb_rf: MEM_WB_RF::new(),
+            wb_forward_rf: MEM_WB_RF::new(),
             pipeline_ctrl,
             agu: AGU_unit::new(),
             fmem: flat_mem::new(),
@@ -136,7 +138,12 @@ impl CPU {
         };
 
         match stage_op(stage_action(CPU_stages::MEM), stage_action(CPU_stages::WB)) {
-            pipeline_action::Normal => self.mem_wb_rf = mem_wb_next,
+            pipeline_action::Normal => {
+                self.mem_wb_rf = mem_wb_next;
+                if self.mem_wb_rf.is_valid() {
+                    self.wb_forward_rf = self.mem_wb_rf;
+                }
+            }
             pipeline_action::Stall => {}
             pipeline_action::Flush | pipeline_action::END => self.mem_wb_rf.invalidate(),
         }
