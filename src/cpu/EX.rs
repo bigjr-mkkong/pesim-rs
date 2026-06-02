@@ -69,7 +69,7 @@ impl CPU {
                     Some(HashSet::<CPU_stages>::from([
                         CPU_stages::IF,
                         CPU_stages::ID,
-                        CPU_stages::EX
+                        CPU_stages::EX,
                     ])),
                 ),
                 [arch_action::DoNothing].to_vec(),

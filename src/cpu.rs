@@ -5,9 +5,9 @@ pub mod IF;
 pub mod MEM;
 pub mod WB;
 pub mod pipeline;
+pub mod pipeline_tests;
 pub mod pipeline_util;
 pub mod signal_scoreboard;
-pub mod pipeline_tests;
 
 pub mod RF;
 pub mod imem;

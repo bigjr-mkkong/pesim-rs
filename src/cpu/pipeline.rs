@@ -1,15 +1,15 @@
-use crate::cpu::imem::IMEM;
-use crate::cpu::pimcpu_types::{arch_action, CPU_stages};
 use crate::cpu::RF::arch_rf;
+use crate::cpu::imem::IMEM;
+use crate::cpu::pimcpu_types::{CPU_stages, arch_action};
 
-use crate::cpu::signal_scoreboard::{pipeline_action, sig_resolver, signal_reason};
 use crate::cpu::AGU::{AGU_MEM_rf, AGU_stop_FSM};
 use crate::cpu::EX::{EX_AGU_rf, EX_stop_FSM, RAW_resolution_FSM};
 use crate::cpu::ID::{ID_EX_rf, ID_jump_FSM};
 use crate::cpu::IF::IF_ID_rf;
-use crate::cpu::MEM::{MEM_stop_FSM, MEM_WB_RF};
-use crate::memory::flat_memory::flat_mem;
+use crate::cpu::MEM::{MEM_WB_RF, MEM_stop_FSM};
+use crate::cpu::signal_scoreboard::{pipeline_action, sig_resolver, signal_reason};
 use crate::memory::AGU_unit::AGU_unit;
+use crate::memory::flat_memory::flat_mem;
 
 pub const PC_TESTING: u16 = 0xffff;
 
@@ -123,35 +123,31 @@ impl CPU {
          *  Flush       z           Flush
          */
 
-        let stage_op =
-            |producer_act, consumer_act| match (producer_act, consumer_act) {
-                (_, pipeline_action::Stall) => pipeline_action::Stall,
+        let stage_op = |producer_act, consumer_act| match (producer_act, consumer_act) {
+            (_, pipeline_action::Stall) => pipeline_action::Stall,
 
-                (pipeline_action::Normal, pipeline_action::Normal) => pipeline_action::Normal,
+            (pipeline_action::Normal, pipeline_action::Normal) => pipeline_action::Normal,
 
-                (pipeline_action::Stall, pipeline_action::Normal) => pipeline_action::Flush,
+            (pipeline_action::Stall, pipeline_action::Normal) => pipeline_action::Flush,
 
-                (_, (pipeline_action::Flush | pipeline_action::END)) => pipeline_action::Flush,
+            (_, pipeline_action::Flush | pipeline_action::END) => pipeline_action::Flush,
 
-                ((pipeline_action::Flush | pipeline_action::END), _) => pipeline_action::Flush,
-            };
+            (pipeline_action::Flush | pipeline_action::END, _) => pipeline_action::Flush,
+        };
 
-        match stage_op(stage_action(CPU_stages::MEM), stage_action(CPU_stages::WB))
-        {
+        match stage_op(stage_action(CPU_stages::MEM), stage_action(CPU_stages::WB)) {
             pipeline_action::Normal => self.mem_wb_rf = mem_wb_next,
             pipeline_action::Stall => {}
             pipeline_action::Flush | pipeline_action::END => self.mem_wb_rf.invalidate(),
         }
 
-        match stage_op(stage_action(CPU_stages::AGU), stage_action(CPU_stages::MEM))
-        {
+        match stage_op(stage_action(CPU_stages::AGU), stage_action(CPU_stages::MEM)) {
             pipeline_action::Normal => self.agu_mem_rf = agu_mem_next,
             pipeline_action::Stall => {}
             pipeline_action::Flush | pipeline_action::END => self.agu_mem_rf.invalidate(),
         }
 
-        match stage_op(stage_action(CPU_stages::EX), stage_action(CPU_stages::AGU))
-        {
+        match stage_op(stage_action(CPU_stages::EX), stage_action(CPU_stages::AGU)) {
             pipeline_action::Normal => self.ex_agu_rf = ex_agu_next,
             pipeline_action::Stall => {}
             pipeline_action::Flush | pipeline_action::END => self.ex_agu_rf.invalidate(),

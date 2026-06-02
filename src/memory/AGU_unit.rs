@@ -63,7 +63,7 @@ impl AGU_unit {
 
         if let Some(ent) = self.table.get(&idx) {
             match ent {
-                AGU_entry::Ent { base, bound } => *bound > offset,
+                AGU_entry::Ent { base: _, bound } => *bound > offset,
                 AGU_entry::NA => false,
             }
         } else {
@@ -124,7 +124,7 @@ impl AGU_unit {
             if let Some(ent) = self.table.get(&idx) {
                 match ent {
                     AGU_entry::NA => None,
-                    AGU_entry::Ent { base, bound } => Some(base + offset),
+                    AGU_entry::Ent { base, bound: _ } => Some(base + offset),
                 }
             } else {
                 None

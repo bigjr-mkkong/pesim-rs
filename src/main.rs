@@ -2,7 +2,6 @@
 #![allow(non_snake_case)]
 #![allow(non_upper_case_globals)]
 
-use cpu::pimcpu_types::{fatptr_rf, inst};
 use cpu::pipeline::CPU;
 use memory::dramsim3_wrapper::dramsim3_wrapper as dsim3_wrapper;
 
@@ -32,8 +31,7 @@ fn main() {
     }
     println!("Dramsim3 PING-PONG works");
 
-    let mut pimcpu = CPU::new();
-
+    let _pimcpu = CPU::new();
 }
 
 mod cpu;
