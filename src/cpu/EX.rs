@@ -69,6 +69,7 @@ impl CPU {
                     Some(HashSet::<CPU_stages>::from([
                         CPU_stages::IF,
                         CPU_stages::ID,
+                        CPU_stages::EX
                     ])),
                 ),
                 [arch_action::DoNothing].to_vec(),
@@ -345,7 +346,7 @@ impl EX_stop_FSM {
 
 #[derive(Clone, Copy)]
 enum RAW_resolution_FSM_state {
-    Stall,
+    PushdownAGU,
     Idle,
 }
 
@@ -357,7 +358,7 @@ pub struct RAW_resolution_FSM {
 impl RAW_resolution_FSM {
     pub const fn new() -> Self {
         Self {
-            state: RAW_resolution_FSM_state::Stall,
+            state: RAW_resolution_FSM_state::PushdownAGU,
         }
     }
 }
@@ -369,7 +370,7 @@ impl SigFSM for RAW_resolution_FSM {
 
     fn action(&self) -> pipeline_action {
         match self.state {
-            RAW_resolution_FSM_state::Stall => pipeline_action::Stall,
+            RAW_resolution_FSM_state::PushdownAGU => pipeline_action::Stall,
             RAW_resolution_FSM_state::Idle => pipeline_action::Normal,
         }
     }
@@ -379,7 +380,7 @@ impl SigFSM for RAW_resolution_FSM {
             (CPU_stages::IF, pipeline_action::Stall),
             (CPU_stages::ID, pipeline_action::Stall),
             (CPU_stages::EX, pipeline_action::Stall),
-            (CPU_stages::AGU, pipeline_action::Stall),
+            // (CPU_stages::AGU, pipeline_action::Stall),
         ])
     }
 
@@ -388,5 +389,7 @@ impl SigFSM for RAW_resolution_FSM {
         true
     }
 
-    fn handle_blocked(&mut self) {}
+    fn handle_blocked(&mut self) {
+        self.state = RAW_resolution_FSM_state::Idle;
+    }
 }

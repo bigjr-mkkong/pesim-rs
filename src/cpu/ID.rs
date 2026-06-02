@@ -209,15 +209,15 @@ impl CPU {
                         valid: true,
                         alu_op: ALUop::NOP,
                         agu_op: AGUop::CHK {
-                            frs,
+                            frs: frd,
                             fptr_lit: arf
-                                .read_fregs(frs)
+                                .read_fregs(frd)
                                 .expect("ID: Unable to load from invalid FPTR"),
                         },
                         dma_op: DMAop::WRITE_FPTR {
-                            frs: frd,
+                            frs,
                             fptr_data_lit: arf
-                                .read_fregs(frd)
+                                .read_fregs(frs)
                                 .expect("ID: Unable to load from invalid FPTR"),
                         },
                         wb_op: WBop::NOP,
