@@ -62,7 +62,7 @@ pub struct dram_portal {
     host_req: Rc<RefCell<Vec<dram_req>>>,
     simcpu_resp: Rc<RefCell<Vec<dram_req>>>,
     host_resp: Rc<RefCell<Vec<dram_req>>>,
-    mode: portal_mode,
+    mode: Rc<RefCell<portal_mode>>,
     pimcpu_reqcnt: u64,
     host_reqcnt: u64,
 }
@@ -74,18 +74,18 @@ impl dram_portal {
             host_req: Rc::new(RefCell::new(Vec::new())),
             simcpu_resp: Rc::new(RefCell::new(Vec::new())),
             host_resp: Rc::new(RefCell::new(Vec::new())),
-            mode: portal_mode::PIM,
+            mode: Rc::new(RefCell::new(portal_mode::PIM)),
             host_reqcnt: 0,
             pimcpu_reqcnt: 0,
         }
     }
 
     pub fn get_mode(&self) -> portal_mode {
-        self.mode
+        *self.mode.borrow()
     }
 
     pub fn set_mode(&mut self, new_mode: portal_mode) {
-        self.mode = new_mode
+        *self.mode.borrow_mut() = new_mode;
     }
 
     pub fn get_pimreq_cnt(&self) -> u64 {

@@ -13,6 +13,12 @@ enum EngineMode {
     switch_delay,
 }
 
+#[derive(Clone, Copy)]
+pub enum EngineSchedulingMode {
+    PimOnly,
+    ScheduledHostPim,
+}
+
 /*
  *
  * TODO
@@ -57,6 +63,7 @@ pub struct Engine {
     dram_port: dram_portal,
     dsim3: dramsim3_wrapper,
     active_port_drained: bool,
+    scheduling_mode: EngineSchedulingMode,
     //Following are scheduler internal variables
     mode: EngineMode,
     next_mode: EngineMode,
@@ -69,7 +76,20 @@ pub struct Engine {
 
 impl Engine {
     pub fn new() -> Self {
-        let dram_port = dram_portal::new();
+        Self::new_pim_only()
+    }
+
+    pub fn new_pim_only() -> Self {
+        Self::with_scheduling_mode(EngineSchedulingMode::PimOnly)
+    }
+
+    pub fn new_scheduled_host_pim() -> Self {
+        Self::with_scheduling_mode(EngineSchedulingMode::ScheduledHostPim)
+    }
+
+    pub fn with_scheduling_mode(scheduling_mode: EngineSchedulingMode) -> Self {
+        let mut dram_port = dram_portal::new();
+        dram_port.set_mode(portal_mode::PIM);
 
         Self {
             sim_cpu: CPU::new_with_dram_port(dram_port.clone()),
@@ -77,8 +97,9 @@ impl Engine {
             host_pool: Vec::new(),
             dsim3: dramsim3_wrapper::new(DSIM3_CFG_PATH, DSIM3_OUT_DIR, 0, 0, 0, 0),
             active_port_drained: true,
+            scheduling_mode,
             mode: EngineMode::PIM,
-            next_mode: EngineMode::switch_delay,
+            next_mode: EngineMode::PIM,
             coming_from_mode: EngineMode::PIM,
             PIM_tick_watermark: 0,
             PIM_tick_rec: 0,
@@ -87,11 +108,11 @@ impl Engine {
         }
     }
 
-    pub fn get_cpu(&mut self) -> &mut CPU{
+    pub fn get_cpu(&mut self) -> &mut CPU {
         &mut self.sim_cpu
     }
 
-    pub fn get_dram_port(&mut self) -> &mut dram_portal{
+    pub fn get_dram_port(&mut self) -> &mut dram_portal {
         &mut self.dram_port
     }
 
@@ -122,7 +143,21 @@ impl Engine {
     /*
      *Host -> SW_stale -> PIM -> SW_stale -> Host
      */
+    fn force_pim_mode(&mut self) {
+        self.mode = EngineMode::PIM;
+        self.next_mode = EngineMode::PIM;
+        self.dram_port.set_mode(portal_mode::PIM);
+    }
+
     pub fn schedule(&mut self) {
+        if let EngineSchedulingMode::PimOnly = self.scheduling_mode {
+            self.force_pim_mode();
+            self.PIM_tick_rec += 1;
+            return;
+        }
+
+        self.next_mode = self.mode;
+
         match self.mode {
             EngineMode::PIM => {
                 // if self.PIM_tick_watermark <= self.PIM_tick_rec {
@@ -193,9 +228,12 @@ impl Engine {
         }
     }
 
-
     pub fn tick(&mut self) {
-        self.sim_cpu.tick();// This tick will eat previous commited dram_req or generate new dram_req
+        if let EngineSchedulingMode::PimOnly = self.scheduling_mode {
+            self.force_pim_mode();
+        }
+
+        self.sim_cpu.tick(); // This tick will eat previous commited dram_req or generate new dram_req
         self.drain_active_port_to_dram();
 
         for req in self.dsim3.ClockTick() {
