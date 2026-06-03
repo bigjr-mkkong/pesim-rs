@@ -1,3 +1,6 @@
+use std::cell::RefCell;
+use std::rc::Rc;
+use crate::CPU;
 pub struct dram_req {
     addr: u64,
     id: Option<u64>,
@@ -48,17 +51,21 @@ pub enum portal_mode{
 }
 
 pub struct dram_portal {
-    pimcpu_req: Vec<dram_req>,
-    host_req: Vec<dram_req>,
+    simcpu_req: Rc<RefCell<Vec<dram_req>>>,
+    host_req: Rc<RefCell<Vec<dram_req>>>,
     mode: portal_mode,
+    pimcpu_reqcnt: u64,
+    host_reqcnt: u64
 }
 
 impl dram_portal{
     pub fn new() -> Self{
         Self{
-            pimcpu_req: Vec::new(),
-            host_req: Vec::new(),
-            mode: portal_mode::HOST
+            simcpu_req: Rc::new(RefCell::new(Vec::new())),
+            host_req: Rc::new(RefCell::new(Vec::new())),
+            mode: portal_mode::HOST,
+            host_reqcnt: 0,
+            pimcpu_reqcnt: 0
         }
     }
 
@@ -70,23 +77,31 @@ impl dram_portal{
         self.mode = new_mode
     }
 
+    pub fn get_pimreq_cnt(&self) -> u64{
+        self.pimcpu_reqcnt
+    }
+
+    pub fn get_hostreq_cnt(&self) -> u64 {
+        self.host_reqcnt
+    }
+
 
     pub fn submit(&mut self, req: portal_req) {
         match req {
             portal_req::PIM_REQ { req } => {
-                self.pimcpu_req.push(req);
+                self.simcpu_req.borrow_mut().push(req);
             },
             portal_req::HOST_REQ { req } => {
-                self.host_req.push(req);
+                self.host_req.borrow_mut().push(req);
             }
         }
     }
 
     pub fn get_one_req(&mut self) -> Option<dram_req> {
         if let portal_mode::PIM = self.get_mode() {
-            self.pimcpu_req.pop()
+            self.simcpu_req.borrow_mut().pop()
         } else {
-            self.host_req.pop()
+            self.host_req.borrow_mut().pop()
         }
     }
     

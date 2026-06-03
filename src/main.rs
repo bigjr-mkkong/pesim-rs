@@ -5,9 +5,9 @@
 use cpu::pipeline::CPU;
 use memory::dramsim3_wrapper::dramsim3_wrapper as dsim3_wrapper;
 
-const DSIM3_CFG_PATH: &str = "/home/michael/Projects/playground/testprogram/pesim-rs/third-party/DRAMsim3/configs/DDR4_4Gb_x4_2400.ini";
+pub const DSIM3_CFG_PATH: &str = "/home/michael/Projects/playground/testprogram/pesim-rs/third-party/DRAMsim3/configs/DDR4_4Gb_x4_2400.ini";
 
-const DSIM3_OUT_DIR: &str = "/home/michael/Projects/playground/testprogram/pesim-rs/output";
+pub const DSIM3_OUT_DIR: &str = "/home/michael/Projects/playground/testprogram/pesim-rs/output";
 
 fn main() {
     let mut dsim3_inst: dsim3_wrapper =

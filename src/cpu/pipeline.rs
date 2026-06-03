@@ -1,4 +1,6 @@
 use crate::cpu::imem::IMEM;
+use std::cell::RefCell;
+use std::rc::Rc;
 use crate::cpu::pimcpu_types::{arch_action, CPU_stages};
 use crate::cpu::RF::arch_rf;
 
@@ -12,6 +14,7 @@ use crate::cpu::IF::IF_ID_rf;
 use crate::cpu::MEM::{MEM_stop_FSM, MEM_WB_RF};
 use crate::memory::flat_memory::flat_mem;
 use crate::memory::AGU_unit::AGU_unit;
+use crate::memory::mem_portal::dram_portal;
 
 pub const PC_TESTING: u16 = 0xffff;
 
