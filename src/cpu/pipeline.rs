@@ -1,8 +1,8 @@
 use crate::cpu::imem::IMEM;
-use std::cell::RefCell;
-use std::rc::Rc;
 use crate::cpu::pimcpu_types::{arch_action, CPU_stages};
 use crate::cpu::RF::arch_rf;
+use std::cell::RefCell;
+use std::rc::Rc;
 
 use crate::cpu::signal_scoreboard::{
     pipeline_action, sig_resolver, signal_reason, signal_req, ExternalPause_FSM,
@@ -13,8 +13,8 @@ use crate::cpu::ID::{ID_EX_rf, ID_jump_FSM};
 use crate::cpu::IF::IF_ID_rf;
 use crate::cpu::MEM::{MEM_stop_FSM, MEM_WB_RF};
 use crate::memory::flat_memory::flat_mem;
-use crate::memory::AGU_unit::AGU_unit;
 use crate::memory::mem_portal::dram_portal;
+use crate::memory::AGU_unit::AGU_unit;
 
 pub const PC_TESTING: u16 = 0xffff;
 
@@ -36,12 +36,12 @@ pub struct CPU {
 }
 
 impl CPU {
-    pub fn new() -> Self {
+    fn build(mem_stop_fsm: MEM_stop_FSM) -> Self {
         let mut pipeline_ctrl = sig_resolver::new();
         pipeline_ctrl.add_new_fsm(signal_reason::jump_resolution, Box::new(ID_jump_FSM::new()));
         pipeline_ctrl.add_new_fsm(signal_reason::prog_end, Box::new(EX_stop_FSM::new()));
         pipeline_ctrl.add_new_fsm(signal_reason::exception, Box::new(AGU_stop_FSM::new()));
-        pipeline_ctrl.add_new_fsm(signal_reason::MEM_block, Box::new(MEM_stop_FSM::new()));
+        pipeline_ctrl.add_new_fsm(signal_reason::mem_block_kind(), Box::new(mem_stop_fsm));
         pipeline_ctrl.add_new_fsm(
             signal_reason::external_pause,
             Box::new(ExternalPause_FSM::new()),
@@ -68,6 +68,14 @@ impl CPU {
         }
     }
 
+    pub fn new() -> Self {
+        Self::build(MEM_stop_FSM::new())
+    }
+
+    pub fn new_with_dram_port(dram_port: dram_portal) -> Self {
+        Self::build(MEM_stop_FSM::new_with_dram_port(dram_port))
+    }
+
     pub fn get_RF(&mut self) -> &mut arch_rf {
         &mut self.RF
     }
@@ -88,7 +96,7 @@ impl CPU {
         self.ext_pause_requested = true;
         self.ready4ext_sig = !self
             .pipeline_ctrl
-            .has_active_signal(signal_reason::MEM_block);
+            .has_active_signal(signal_reason::mem_block_kind());
     }
 
     pub fn signal_resume(&mut self) {

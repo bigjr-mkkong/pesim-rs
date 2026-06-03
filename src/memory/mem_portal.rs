@@ -1,6 +1,8 @@
+use crate::CPU;
 use std::cell::RefCell;
 use std::rc::Rc;
-use crate::CPU;
+
+#[derive(Clone)]
 pub struct dram_req {
     addr: u64,
     id: Option<u64>,
@@ -37,35 +39,44 @@ impl dram_req {
     pub fn is_pim(&self) -> bool {
         self.is_pim
     }
+
+    fn matches_completion(&self, other: &dram_req) -> bool {
+        self.addr == other.addr && self.is_read == other.is_read && self.is_pim == other.is_pim
+    }
 }
 
-pub enum portal_req{
-    PIM_REQ{req: dram_req},
-    HOST_REQ{req: dram_req}
+pub enum portal_req {
+    PIM_REQ { req: dram_req },
+    HOST_REQ { req: dram_req },
 }
 
 #[derive(Clone, Copy)]
-pub enum portal_mode{
+pub enum portal_mode {
     PIM,
-    HOST
+    HOST,
 }
 
+#[derive(Clone)]
 pub struct dram_portal {
     simcpu_req: Rc<RefCell<Vec<dram_req>>>,
     host_req: Rc<RefCell<Vec<dram_req>>>,
+    simcpu_resp: Rc<RefCell<Vec<dram_req>>>,
+    host_resp: Rc<RefCell<Vec<dram_req>>>,
     mode: portal_mode,
     pimcpu_reqcnt: u64,
-    host_reqcnt: u64
+    host_reqcnt: u64,
 }
 
-impl dram_portal{
-    pub fn new() -> Self{
-        Self{
+impl dram_portal {
+    pub fn new() -> Self {
+        Self {
             simcpu_req: Rc::new(RefCell::new(Vec::new())),
             host_req: Rc::new(RefCell::new(Vec::new())),
-            mode: portal_mode::HOST,
+            simcpu_resp: Rc::new(RefCell::new(Vec::new())),
+            host_resp: Rc::new(RefCell::new(Vec::new())),
+            mode: portal_mode::PIM,
             host_reqcnt: 0,
-            pimcpu_reqcnt: 0
+            pimcpu_reqcnt: 0,
         }
     }
 
@@ -77,7 +88,7 @@ impl dram_portal{
         self.mode = new_mode
     }
 
-    pub fn get_pimreq_cnt(&self) -> u64{
+    pub fn get_pimreq_cnt(&self) -> u64 {
         self.pimcpu_reqcnt
     }
 
@@ -85,12 +96,11 @@ impl dram_portal{
         self.host_reqcnt
     }
 
-
     pub fn submit(&mut self, req: portal_req) {
         match req {
             portal_req::PIM_REQ { req } => {
                 self.simcpu_req.borrow_mut().push(req);
-            },
+            }
             portal_req::HOST_REQ { req } => {
                 self.host_req.borrow_mut().push(req);
             }
@@ -104,5 +114,24 @@ impl dram_portal{
             self.host_req.borrow_mut().pop()
         }
     }
-    
+
+    pub fn complete(&mut self, req: dram_req) {
+        if req.is_pim() {
+            self.simcpu_resp.borrow_mut().push(req);
+        } else {
+            self.host_resp.borrow_mut().push(req);
+        }
+    }
+
+    pub fn take_completed(&mut self, req: &dram_req) -> Option<dram_req> {
+        let resp = if req.is_pim() {
+            &self.simcpu_resp
+        } else {
+            &self.host_resp
+        };
+        let mut resp = resp.borrow_mut();
+        let pos = resp.iter().position(|done| req.matches_completion(done));
+
+        pos.map(|idx| resp.remove(idx))
+    }
 }

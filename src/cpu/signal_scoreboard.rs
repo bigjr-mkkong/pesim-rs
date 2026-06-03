@@ -5,11 +5,27 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 pub enum signal_reason {
     jump_resolution,
     RAW_resolution,
-    MEM_block,
+    MEM_block { addr: u64, is_read: bool },
     external_pause,
     exception,
     prog_end,
     no_reason,
+}
+
+impl signal_reason {
+    pub fn mem_block_kind() -> Self {
+        signal_reason::MEM_block {
+            addr: 0,
+            is_read: true,
+        }
+    }
+
+    fn fsm_key(self) -> Self {
+        match self {
+            signal_reason::MEM_block { .. } => signal_reason::mem_block_kind(),
+            reason => reason,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -76,7 +92,7 @@ pub trait SigFSM: SigFSMClone {
     fn action(&self) -> pipeline_action;
 
     fn get_ops(&self) -> HashMap<CPU_stages, pipeline_action>;
-    fn advance_winner(&mut self) -> bool;
+    fn advance_winner(&mut self, sig_reason: signal_reason) -> bool;
     fn handle_blocked(&mut self) {}
 }
 
@@ -85,6 +101,7 @@ struct active_signal {
     issuer_stage: CPU_stages,
     fsm: Box<dyn SigFSM>,
     target_stages: Option<HashSet<CPU_stages>>,
+    sig_reason: signal_reason,
 }
 
 pub struct sig_resolver {
@@ -118,7 +135,7 @@ fn signal_priority(sig_reason: signal_reason) -> u8 {
         signal_reason::jump_resolution => 10,
         signal_reason::RAW_resolution => 20,
         signal_reason::external_pause => 30,
-        signal_reason::MEM_block => 40,
+        signal_reason::MEM_block { .. } => 40,
         signal_reason::exception => 50,
         signal_reason::prog_end => 50,
     }
@@ -134,7 +151,7 @@ impl sig_resolver {
     }
 
     pub fn add_new_fsm(&mut self, sig_reason: signal_reason, new_fsm: Box<dyn SigFSM>) -> bool {
-        match self.fsm_menu.entry(sig_reason) {
+        match self.fsm_menu.entry(sig_reason.fsm_key()) {
             std::collections::hash_map::Entry::Occupied(_) => false,
             std::collections::hash_map::Entry::Vacant(v) => {
                 v.insert(new_fsm);
@@ -152,7 +169,7 @@ impl sig_resolver {
             return;
         }
 
-        if let Some(template_fsm) = self.fsm_menu.get(&req.sig_reason) {
+        if let Some(template_fsm) = self.fsm_menu.get(&req.sig_reason.fsm_key()) {
             let new_fsm = template_fsm.clone();
             let act = new_fsm.action();
 
@@ -170,6 +187,7 @@ impl sig_resolver {
                 issuer_stage: req.issuer_stage,
                 fsm: new_fsm,
                 target_stages: req.target_stages,
+                sig_reason: req.sig_reason,
             });
         }
     }
@@ -189,7 +207,7 @@ impl sig_resolver {
 
         if let Some(winner_key) = winner_key {
             if let Some(champ_sig) = self.active_sig.get_mut(&winner_key) {
-                self.last_winner_reason = Some(champ_sig.fsm.reason());
+                self.last_winner_reason = Some(champ_sig.sig_reason);
                 let mut winner_ops = champ_sig.fsm.get_ops();
 
                 if let Some(target_stages) = &champ_sig.target_stages {
@@ -197,7 +215,7 @@ impl sig_resolver {
                 }
 
                 ret.extend(winner_ops);
-                champ_sig.fsm.advance_winner();
+                champ_sig.fsm.advance_winner(champ_sig.sig_reason);
             }
 
             for (key, active) in self.active_sig.iter_mut() {
@@ -222,10 +240,10 @@ impl sig_resolver {
                 } else {
                     Some((
                         (
-                            signal_priority(active.fsm.reason()),
+                            signal_priority(active.sig_reason),
                             active.issuer_stage,
                             act,
-                            active.fsm.reason(),
+                            active.sig_reason,
                         ),
                         active,
                     ))
@@ -248,14 +266,14 @@ impl sig_resolver {
     pub fn has_active_signal(&self, sig_reason: signal_reason) -> bool {
         self.active_sig
             .values()
-            .any(|active| active.fsm.reason() == sig_reason)
+            .any(|active| active.sig_reason.fsm_key() == sig_reason.fsm_key())
     }
 
     pub fn clear_active_signal(&mut self, sig_reason: signal_reason) {
         self.active_sig
-            .retain(|_, active| active.fsm.reason() != sig_reason);
+            .retain(|_, active| active.sig_reason.fsm_key() != sig_reason.fsm_key());
 
-        if self.last_winner_reason == Some(sig_reason) {
+        if self.last_winner_reason.map(|reason| reason.fsm_key()) == Some(sig_reason.fsm_key()) {
             self.last_winner_reason = None;
         }
     }
@@ -283,7 +301,7 @@ impl SigFSM for ExternalPause_FSM {
         ])
     }
 
-    fn advance_winner(&mut self) -> bool {
+    fn advance_winner(&mut self, _sig_reason: signal_reason) -> bool {
         true
     }
 

@@ -1,11 +1,11 @@
-use crate::cpu::AGU::AGU_MEM_rf;
-use crate::cpu::pimcpu_types::{CPU_stages, DMAop, WBop, arch_action, fatptr_rf};
+use crate::cpu::pimcpu_types::{arch_action, fatptr_rf, CPU_stages, DMAop, WBop};
 use crate::cpu::pipeline::CPU;
-use crate::cpu::signal_scoreboard::{SigFSM, pipeline_action, signal_reason, signal_req};
-use rand::random_bool;
+use crate::cpu::signal_scoreboard::{pipeline_action, signal_reason, signal_req, SigFSM};
+use crate::cpu::AGU::AGU_MEM_rf;
 use std::collections::{HashMap, HashSet};
 
 use crate::memory::flat_memory::flat_mem;
+use crate::memory::mem_portal::{dram_portal, dram_req, portal_req};
 
 #[derive(Clone, Copy)]
 pub struct MEM_WB_RF {
@@ -88,7 +88,10 @@ impl CPU {
                                 wb_op: agu_mem_rf.get_wb_op(),
                             },
                             signal_req::new(
-                                signal_reason::MEM_block,
+                                signal_reason::MEM_block {
+                                    addr: paddr as u64,
+                                    is_read: true,
+                                },
                                 CPU_stages::MEM,
                                 Some(HashSet::<CPU_stages>::from([
                                     CPU_stages::IF,
@@ -121,7 +124,19 @@ impl CPU {
                                 ptr_result: None,
                                 wb_op: WBop::NOP,
                             },
-                            signal_req::new(signal_reason::no_reason, CPU_stages::MEM, None),
+                            signal_req::new(
+                                signal_reason::MEM_block {
+                                    addr: paddr as u64,
+                                    is_read: false,
+                                },
+                                CPU_stages::MEM,
+                                Some(HashSet::<CPU_stages>::from([
+                                    CPU_stages::IF,
+                                    CPU_stages::ID,
+                                    CPU_stages::EX,
+                                    CPU_stages::AGU,
+                                ])),
+                            ),
                             [arch_action::WriteMEM_DATA {
                                 addr: paddr,
                                 content: data_lit,
@@ -151,7 +166,10 @@ impl CPU {
                                 wb_op: agu_mem_rf.get_wb_op(),
                             },
                             signal_req::new(
-                                signal_reason::MEM_block,
+                                signal_reason::MEM_block {
+                                    addr: paddr as u64,
+                                    is_read: true,
+                                },
                                 CPU_stages::MEM,
                                 Some(HashSet::<CPU_stages>::from([
                                     CPU_stages::IF,
@@ -184,7 +202,19 @@ impl CPU {
                                 ptr_result: None,
                                 wb_op: WBop::NOP,
                             },
-                            signal_req::new(signal_reason::no_reason, CPU_stages::MEM, None),
+                            signal_req::new(
+                                signal_reason::MEM_block {
+                                    addr: paddr as u64,
+                                    is_read: false,
+                                },
+                                CPU_stages::MEM,
+                                Some(HashSet::<CPU_stages>::from([
+                                    CPU_stages::IF,
+                                    CPU_stages::ID,
+                                    CPU_stages::EX,
+                                    CPU_stages::AGU,
+                                ])),
+                            ),
                             [arch_action::WriteMEM_FPTR {
                                 addr: paddr,
                                 content: fptr_data_lit,
@@ -211,27 +241,31 @@ impl CPU {
 
 #[derive(Clone, Copy)]
 pub enum MEM_stop_FSM_states {
-    STALL,
+    Submit,
+    Stall,
     WriteBack,
     Release,
     Idle,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub struct MEM_stop_FSM {
     state: MEM_stop_FSM_states,
     state_next: MEM_stop_FSM_states,
+    req: Option<dram_req>,
+    dram_port: Option<dram_portal>,
 }
 
 impl SigFSM for MEM_stop_FSM {
     fn reason(&self) -> signal_reason {
-        signal_reason::MEM_block
+        signal_reason::mem_block_kind()
     }
 
     //action should return Normal when reaching the finish state
     fn action(&self) -> pipeline_action {
         match self.state {
-            MEM_stop_FSM_states::STALL
+            MEM_stop_FSM_states::Submit
+            | MEM_stop_FSM_states::Stall
             | MEM_stop_FSM_states::WriteBack
             | MEM_stop_FSM_states::Release => pipeline_action::Stall,
             MEM_stop_FSM_states::Idle => pipeline_action::Normal,
@@ -247,7 +281,7 @@ impl SigFSM for MEM_stop_FSM {
         ]);
 
         match self.state {
-            MEM_stop_FSM_states::STALL => {
+            MEM_stop_FSM_states::Submit | MEM_stop_FSM_states::Stall => {
                 // The memory transaction is still in flight, so MEM must keep
                 // holding AGU/MEM instead of producing a premature WB value.
                 ops.insert(CPU_stages::MEM, pipeline_action::Stall);
@@ -267,15 +301,32 @@ impl SigFSM for MEM_stop_FSM {
         }
     }
 
-    fn advance_winner(&mut self) -> bool {
-        // Simulate variable DRAM latency while keeping tests reproducible.
-        let op_finished = random_bool(0.1);
+    fn advance_winner(&mut self, sig_reason: signal_reason) -> bool {
         self.state_next = match self.state {
-            MEM_stop_FSM_states::STALL => {
-                if op_finished {
-                    MEM_stop_FSM_states::WriteBack
+            MEM_stop_FSM_states::Submit => {
+                if let signal_reason::MEM_block { addr, is_read } = sig_reason {
+                    let req = dram_req::new(addr, is_read, true);
+                    self.req = Some(req.clone());
+
+                    if let Some(dram_port) = &mut self.dram_port {
+                        dram_port.submit(portal_req::PIM_REQ { req });
+                        MEM_stop_FSM_states::Stall
+                    } else {
+                        MEM_stop_FSM_states::WriteBack
+                    }
                 } else {
-                    MEM_stop_FSM_states::STALL
+                    MEM_stop_FSM_states::WriteBack
+                }
+            }
+            MEM_stop_FSM_states::Stall => {
+                if let (Some(req), Some(dram_port)) = (&self.req, &mut self.dram_port) {
+                    if dram_port.take_completed(req).is_some() {
+                        MEM_stop_FSM_states::WriteBack
+                    } else {
+                        MEM_stop_FSM_states::Stall
+                    }
+                } else {
+                    MEM_stop_FSM_states::WriteBack
                 }
             }
             MEM_stop_FSM_states::WriteBack => MEM_stop_FSM_states::Release,
@@ -293,8 +344,19 @@ impl SigFSM for MEM_stop_FSM {
 impl MEM_stop_FSM {
     pub const fn new() -> Self {
         Self {
-            state: MEM_stop_FSM_states::STALL,
-            state_next: MEM_stop_FSM_states::STALL,
+            state: MEM_stop_FSM_states::Submit,
+            state_next: MEM_stop_FSM_states::Submit,
+            req: None,
+            dram_port: None,
+        }
+    }
+
+    pub fn new_with_dram_port(dram_port: dram_portal) -> Self {
+        Self {
+            state: MEM_stop_FSM_states::Submit,
+            state_next: MEM_stop_FSM_states::Submit,
+            req: None,
+            dram_port: Some(dram_port),
         }
     }
 }

@@ -1,8 +1,8 @@
-use crate::cpu::pimcpu_types::{AGUop, CPU_stages, DMAop, WBop, arch_action, fatptr_rf};
+use crate::cpu::pimcpu_types::{arch_action, fatptr_rf, AGUop, CPU_stages, DMAop, WBop};
 use crate::cpu::pipeline::CPU;
 
+use crate::cpu::signal_scoreboard::{pipeline_action, signal_reason, signal_req, SigFSM};
 use crate::cpu::EX::EX_AGU_rf;
-use crate::cpu::signal_scoreboard::{SigFSM, pipeline_action, signal_reason, signal_req};
 use crate::memory::AGU_unit::AGU_unit;
 
 use std::collections::{HashMap, HashSet};
@@ -311,7 +311,7 @@ impl SigFSM for AGU_stop_FSM {
         ])
     }
 
-    fn advance_winner(&mut self) -> bool {
+    fn advance_winner(&mut self, _sig_reason: signal_reason) -> bool {
         self.state_next = match self.state {
             AGU_stop_FSM_states::Drain_WB => AGU_stop_FSM_states::Drain_MEM,
             AGU_stop_FSM_states::Drain_MEM => AGU_stop_FSM_states::Idle,

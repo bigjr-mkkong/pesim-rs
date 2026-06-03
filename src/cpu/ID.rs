@@ -1,6 +1,6 @@
 use crate::cpu::pimcpu_types::*;
 use crate::cpu::pipeline::CPU;
-use crate::cpu::signal_scoreboard::{SigFSM, pipeline_action, signal_reason, signal_req};
+use crate::cpu::signal_scoreboard::{pipeline_action, signal_reason, signal_req, SigFSM};
 
 use crate::cpu::RF::arch_rf;
 
@@ -339,7 +339,7 @@ impl SigFSM for ID_jump_FSM {
         HashMap::<CPU_stages, pipeline_action>::from([(CPU_stages::IF, pipeline_action::Flush)])
     }
 
-    fn advance_winner(&mut self) -> bool {
+    fn advance_winner(&mut self, _sig_reason: signal_reason) -> bool {
         self.state_next = match self.state {
             ID_jump_FSG_states::FLUSH => ID_jump_FSG_states::IDLE,
             ID_jump_FSG_states::IDLE => ID_jump_FSG_states::IDLE,

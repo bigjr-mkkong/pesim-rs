@@ -72,21 +72,22 @@ impl dramsim3_wrapper {
         queue_map: &mut HashMap<u64, VecDeque<dram_req>>,
         addr: u64,
         handler_name: &str,
-    ) {
+    ) -> dram_req {
         match queue_map.entry(addr) {
             std::collections::hash_map::Entry::Occupied(mut ent) => {
                 let queue = ent.get_mut();
-
-                if queue.pop_front().is_none() {
+                let req = queue.pop_front().unwrap_or_else(|| {
                     panic!(
                         "{} received an address with no pending request",
                         handler_name
-                    );
-                }
+                    )
+                });
 
                 if queue.is_empty() {
                     ent.remove();
                 }
+
+                req
             }
             std::collections::hash_map::Entry::Vacant(_) => {
                 panic!("{} received an invalid address: {}", handler_name, addr);
@@ -127,25 +128,28 @@ impl dramsim3_wrapper {
         }
     }
 
-    fn read_handler(&mut self, addr: u64) {
-        Self::pop_completed(&mut self.pend_read, addr, "read_handler");
+    fn read_handler(&mut self, addr: u64) -> dram_req {
+        Self::pop_completed(&mut self.pend_read, addr, "read_handler")
     }
 
-    fn write_handler(&mut self, addr: u64) {
-        Self::pop_completed(&mut self.pend_write, addr, "write_handler");
+    fn write_handler(&mut self, addr: u64) -> dram_req {
+        Self::pop_completed(&mut self.pend_write, addr, "write_handler")
     }
 
-    pub fn ClockTick(&mut self) {
+    pub fn ClockTick(&mut self) -> Vec<dram_req> {
         dramsim3_ext::ClockTick(self.ms.pin_mut());
         let mem_evs = dramsim3_ext::take_events(self.ms.pin_mut());
+        let mut completed = Vec::new();
 
         for events in &mem_evs {
             if events.is_write == true {
-                self.write_handler(events.addr);
+                completed.push(self.write_handler(events.addr));
             } else {
-                self.read_handler(events.addr);
+                completed.push(self.read_handler(events.addr));
             }
         }
+
+        completed
     }
 
     pub fn get_TCK(&mut self) -> f64 {
@@ -193,22 +197,32 @@ impl dramsim3_wrapper {
         }
     }
 
+    pub fn is_drained(&self) -> bool {
+        self.pend_read.is_empty() && self.pend_write.is_empty()
+    }
+
     pub fn WillAcceptTransaction(&mut self, addr: u64, is_write: bool) -> bool {
         return dramsim3_ext::WillAcceptTransaction(self.ms.pin_mut(), addr, is_write);
     }
 
     pub fn AddTransaction(&mut self, addr: u64, is_write: bool, is_pim: bool) {
-        let real_addr = self.translate_addr(addr, is_pim);
-        let ret = dramsim3_ext::AddTransaction(self.ms.pin_mut(), real_addr, is_write, is_pim);
+        let d_req = dram_req::new(addr, !is_write, is_pim);
+        self.AddTransactionReq(d_req);
+    }
+
+    pub fn AddTransactionReq(&mut self, mut req: dram_req) {
+        let real_addr = self.translate_addr(req.get_addr(), req.is_pim());
+        let is_write = !req.is_read();
+        let ret =
+            dramsim3_ext::AddTransaction(self.ms.pin_mut(), real_addr, is_write, req.is_pim());
 
         if ret == true {
-            let mut d_req = dram_req::new(addr, !is_write, is_pim);
-            d_req.set_id(self.get_req_id());
+            req.set_id(self.get_req_id());
 
             if is_write == true {
-                Self::push_pending(&mut self.pend_write, real_addr, d_req);
+                Self::push_pending(&mut self.pend_write, real_addr, req);
             } else {
-                Self::push_pending(&mut self.pend_read, real_addr, d_req);
+                Self::push_pending(&mut self.pend_read, real_addr, req);
             }
         } else {
             panic!("AddTransaction(): AddTransaction() Failed");
