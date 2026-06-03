@@ -1,15 +1,17 @@
-use crate::cpu::RF::arch_rf;
 use crate::cpu::imem::IMEM;
-use crate::cpu::pimcpu_types::{CPU_stages, arch_action};
+use crate::cpu::pimcpu_types::{arch_action, CPU_stages};
+use crate::cpu::RF::arch_rf;
 
+use crate::cpu::signal_scoreboard::{
+    pipeline_action, sig_resolver, signal_reason, signal_req, ExternalPause_FSM,
+};
 use crate::cpu::AGU::{AGU_MEM_rf, AGU_stop_FSM};
 use crate::cpu::EX::{EX_AGU_rf, EX_stop_FSM, RAW_resolution_FSM};
 use crate::cpu::ID::{ID_EX_rf, ID_jump_FSM};
 use crate::cpu::IF::IF_ID_rf;
-use crate::cpu::MEM::{MEM_WB_RF, MEM_stop_FSM};
-use crate::cpu::signal_scoreboard::{pipeline_action, sig_resolver, signal_reason};
-use crate::memory::AGU_unit::AGU_unit;
+use crate::cpu::MEM::{MEM_stop_FSM, MEM_WB_RF};
 use crate::memory::flat_memory::flat_mem;
+use crate::memory::AGU_unit::AGU_unit;
 
 pub const PC_TESTING: u16 = 0xffff;
 
@@ -26,6 +28,8 @@ pub struct CPU {
     pub(crate) pipeline_ctrl: sig_resolver,
     pub(crate) agu: AGU_unit,
     pub(crate) fmem: flat_mem,
+    ext_pause_requested: bool,
+    ready4ext_sig: bool,
 }
 
 impl CPU {
@@ -35,6 +39,10 @@ impl CPU {
         pipeline_ctrl.add_new_fsm(signal_reason::prog_end, Box::new(EX_stop_FSM::new()));
         pipeline_ctrl.add_new_fsm(signal_reason::exception, Box::new(AGU_stop_FSM::new()));
         pipeline_ctrl.add_new_fsm(signal_reason::MEM_block, Box::new(MEM_stop_FSM::new()));
+        pipeline_ctrl.add_new_fsm(
+            signal_reason::external_pause,
+            Box::new(ExternalPause_FSM::new()),
+        );
         pipeline_ctrl.add_new_fsm(
             signal_reason::RAW_resolution,
             Box::new(RAW_resolution_FSM::new()),
@@ -52,6 +60,8 @@ impl CPU {
             pipeline_ctrl,
             agu: AGU_unit::new(),
             fmem: flat_mem::new(),
+            ext_pause_requested: false,
+            ready4ext_sig: true,
         }
     }
 
@@ -71,6 +81,47 @@ impl CPU {
         &mut self.agu
     }
 
+    pub fn signal_pause(&mut self) {
+        self.ext_pause_requested = true;
+        self.ready4ext_sig = !self
+            .pipeline_ctrl
+            .has_active_signal(signal_reason::MEM_block);
+    }
+
+    pub fn signal_resume(&mut self) {
+        self.ext_pause_requested = false;
+        self.ready4ext_sig = true;
+        self.pipeline_ctrl
+            .clear_active_signal(signal_reason::external_pause);
+    }
+
+    pub fn ready4signal(&self) -> bool {
+        self.ready4ext_sig
+    }
+
+    fn maybe_pause_stage_result(
+        &self,
+        sig_req: signal_req,
+        arch_ops: Vec<arch_action>,
+        issuer: CPU_stages,
+    ) -> (signal_req, Vec<arch_action>) {
+        match sig_req.get_reason() {
+            signal_reason::exception | signal_reason::prog_end => (sig_req, arch_ops),
+            _ if self.ext_pause_requested => {
+                let masked_arch_ops = match issuer {
+                    CPU_stages::IF => [arch_action::HoldPC].to_vec(),
+                    _ => [arch_action::DoNothing].to_vec(),
+                };
+
+                (
+                    signal_req::new(signal_reason::external_pause, issuer, None),
+                    masked_arch_ops,
+                )
+            }
+            _ => (sig_req, arch_ops),
+        }
+    }
+
     pub fn tick(&mut self) {
         let (_, wb_sigreq, wb_archop) = self.eval_WB(&self.mem_wb_rf);
         self.pipeline_ctrl.submit_signal(Some(wb_sigreq));
@@ -79,18 +130,33 @@ impl CPU {
         self.pipeline_ctrl.submit_signal(Some(mem_sigreq));
 
         let (agu_mem_next, agu_sigreq, agu_archop) = self.eval_AGU(&self.ex_agu_rf, &self.agu);
+        let (agu_sigreq, agu_archop) =
+            self.maybe_pause_stage_result(agu_sigreq, agu_archop, CPU_stages::AGU);
         self.pipeline_ctrl.submit_signal(Some(agu_sigreq));
 
         let (ex_agu_next, ex_sigreq, ex_archop) = self.eval_EX(&self.id_ex_rf);
+        let (ex_sigreq, ex_archop) =
+            self.maybe_pause_stage_result(ex_sigreq, ex_archop, CPU_stages::EX);
         self.pipeline_ctrl.submit_signal(Some(ex_sigreq));
 
         let (id_ex_next, id_sigreq, id_archop) = self.eval_ID(&self.if_id_rf, &self.RF);
+        let (id_sigreq, id_archop) =
+            self.maybe_pause_stage_result(id_sigreq, id_archop, CPU_stages::ID);
         self.pipeline_ctrl.submit_signal(Some(id_sigreq));
 
         let (if_id_next, if_sigreq, if_archop) = self.eval_IF(&self.RF, &self.imem);
+        let (if_sigreq, if_archop) =
+            self.maybe_pause_stage_result(if_sigreq, if_archop, CPU_stages::IF);
         self.pipeline_ctrl.submit_signal(Some(if_sigreq));
 
         let pipeline_op = self.pipeline_ctrl.get_decision();
+        let winner_reason = self.pipeline_ctrl.last_winner_reason();
+
+        if self.ext_pause_requested {
+            self.ready4ext_sig = winner_reason == Some(signal_reason::external_pause);
+        } else {
+            self.ready4ext_sig = true;
+        }
 
         let stage_action = |stage| {
             pipeline_op

@@ -1,5 +1,7 @@
+use crate::cpu::pimcpu_types::{fatptr_rf, inst, CPU_stages};
+use crate::cpu::signal_scoreboard::{signal_reason, signal_req};
 use crate::CPU;
-use crate::cpu::pimcpu_types::{fatptr_rf, inst};
+use std::collections::HashSet;
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -441,4 +443,59 @@ mod tests {
         // v5 should remain unchanged.
         assert_eq!(pimcpu.get_RF().read_vregs(5), [0; 4]);
     }
+
+    #[test]
+
+    fn forwards_alu_result_into_fatptr_add_index_operand_pause_resume() {
+        let mut pimcpu = CPU::new();
+
+        pimcpu.get_agu().insert(0, 0, 16);
+
+        pimcpu.get_RF().write_fregs(1, fatptr_rf::new(0, 0));
+
+        pimcpu.get_RF().write_vregs(1, [1; 4]);
+        pimcpu.get_RF().write_vregs(2, [2; 4]);
+        pimcpu.get_RF().write_vregs(3, [0; 4]);
+        pimcpu.get_RF().write_vregs(4, [0; 4]);
+
+        pimcpu.get_fmem().mem_write_data(3, &[777; 4]);
+
+        let prog: [inst; 3] = [
+            // v3 = [3; 4]
+            inst::ADD128 {
+                rd: 3,
+                rs1: 1,
+                rs2: 2,
+            },
+            // f1 = f1 + v3[0] = MEM[3]
+            // must use forwarded v3
+            inst::FatPtrADD {
+                frd: 1,
+                frs: 1,
+                rs1: 3,
+                imm_idx: 0,
+            },
+            // should load MEM[3]
+            inst::LD128 { rd: 4, frs: 1 },
+        ];
+
+        pimcpu.get_imem().flash_in(&prog);
+
+        let mut pause_once = true;
+
+        for cycl in 0..1000 {
+            if cycl == 1 {
+                pimcpu.signal_pause();
+            }
+
+            if cycl > 10 && pimcpu.ready4signal() && pause_once{
+                pimcpu.signal_resume();
+                pause_once = false;
+            }
+            pimcpu.tick();
+        }
+
+        assert_eq!(pimcpu.get_RF().read_vregs(4), [777; 4]);
+    }
+    
 }

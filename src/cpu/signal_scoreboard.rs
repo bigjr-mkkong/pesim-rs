@@ -89,7 +89,8 @@ struct active_signal {
 
 pub struct sig_resolver {
     fsm_menu: HashMap<signal_reason, Box<dyn SigFSM>>,
-    active_sig: BTreeMap<(CPU_stages, pipeline_action, signal_reason), active_signal>,
+    active_sig: BTreeMap<(u8, CPU_stages, pipeline_action, signal_reason), active_signal>,
+    last_winner_reason: Option<signal_reason>,
 }
 
 pub trait SigFSMClone {
@@ -111,11 +112,24 @@ impl Clone for Box<dyn SigFSM> {
     }
 }
 
+fn signal_priority(sig_reason: signal_reason) -> u8 {
+    match sig_reason {
+        signal_reason::no_reason => 0,
+        signal_reason::jump_resolution => 10,
+        signal_reason::RAW_resolution => 20,
+        signal_reason::external_pause => 30,
+        signal_reason::MEM_block => 40,
+        signal_reason::exception => 50,
+        signal_reason::prog_end => 50,
+    }
+}
+
 impl sig_resolver {
     pub fn new() -> Self {
         Self {
             fsm_menu: HashMap::new(),
             active_sig: BTreeMap::new(),
+            last_winner_reason: None,
         }
     }
 
@@ -146,7 +160,12 @@ impl sig_resolver {
                 return;
             }
 
-            let key = (req.issuer_stage, act, req.sig_reason);
+            let key = (
+                signal_priority(req.sig_reason),
+                req.issuer_stage,
+                act,
+                req.sig_reason,
+            );
             self.active_sig.entry(key).or_insert_with(|| active_signal {
                 issuer_stage: req.issuer_stage,
                 fsm: new_fsm,
@@ -166,9 +185,11 @@ impl sig_resolver {
         ]);
 
         let winner_key = self.active_sig.keys().next_back().copied();
+        self.last_winner_reason = None;
 
         if let Some(winner_key) = winner_key {
             if let Some(champ_sig) = self.active_sig.get_mut(&winner_key) {
+                self.last_winner_reason = Some(champ_sig.fsm.reason());
                 let mut winner_ops = champ_sig.fsm.get_ops();
 
                 if let Some(target_stages) = &champ_sig.target_stages {
@@ -199,7 +220,15 @@ impl sig_resolver {
                 if act == pipeline_action::Normal {
                     None
                 } else {
-                    Some(((active.issuer_stage, act, active.fsm.reason()), active))
+                    Some((
+                        (
+                            signal_priority(active.fsm.reason()),
+                            active.issuer_stage,
+                            act,
+                            active.fsm.reason(),
+                        ),
+                        active,
+                    ))
                 }
             })
             .collect();
@@ -210,5 +239,59 @@ impl sig_resolver {
         self.update_active();
 
         return ret;
+    }
+
+    pub fn last_winner_reason(&self) -> Option<signal_reason> {
+        self.last_winner_reason
+    }
+
+    pub fn has_active_signal(&self, sig_reason: signal_reason) -> bool {
+        self.active_sig
+            .values()
+            .any(|active| active.fsm.reason() == sig_reason)
+    }
+
+    pub fn clear_active_signal(&mut self, sig_reason: signal_reason) {
+        self.active_sig
+            .retain(|_, active| active.fsm.reason() != sig_reason);
+
+        if self.last_winner_reason == Some(sig_reason) {
+            self.last_winner_reason = None;
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+pub struct ExternalPause_FSM;
+
+impl SigFSM for ExternalPause_FSM {
+    fn reason(&self) -> signal_reason {
+        signal_reason::external_pause
+    }
+
+    fn action(&self) -> pipeline_action {
+        pipeline_action::Stall
+    }
+
+    fn get_ops(&self) -> HashMap<CPU_stages, pipeline_action> {
+        HashMap::from([
+            (CPU_stages::ID, pipeline_action::Stall),
+            (CPU_stages::EX, pipeline_action::Stall),
+            (CPU_stages::AGU, pipeline_action::Stall),
+            (CPU_stages::MEM, pipeline_action::Stall),
+            (CPU_stages::WB, pipeline_action::Stall),
+        ])
+    }
+
+    fn advance_winner(&mut self) -> bool {
+        true
+    }
+
+    fn handle_blocked(&mut self) {}
+}
+
+impl ExternalPause_FSM {
+    pub const fn new() -> Self {
+        Self
     }
 }
