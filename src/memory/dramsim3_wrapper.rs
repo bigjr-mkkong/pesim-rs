@@ -129,10 +129,12 @@ impl dramsim3_wrapper {
     }
 
     fn read_handler(&mut self, addr: u64) -> dram_req {
+        println!("Read finished");
         Self::pop_completed(&mut self.pend_read, addr, "read_handler")
     }
 
     fn write_handler(&mut self, addr: u64) -> dram_req {
+        println!("Write finished");
         Self::pop_completed(&mut self.pend_write, addr, "write_handler")
     }
 

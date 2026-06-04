@@ -321,6 +321,7 @@ impl SigFSM for MEM_stop_FSM {
             MEM_stop_FSM_states::Stall => {
                 if let (Some(req), Some(dram_port)) = (&self.req, &mut self.dram_port) {
                     if dram_port.take_completed(req).is_some() {
+                        println!("MEM unblocked");
                         MEM_stop_FSM_states::WriteBack
                     } else {
                         MEM_stop_FSM_states::Stall

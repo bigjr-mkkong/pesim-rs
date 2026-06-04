@@ -11,6 +11,7 @@ pub const DSIM3_OUT_DIR: &str = "/home/michael/Projects/playground/testprogram/p
 
 fn main() {
     engine_runs_pim_load_through_mem_fsm_and_dram_portal();
+    println!("Finished");
 }
 
 mod cpu;
