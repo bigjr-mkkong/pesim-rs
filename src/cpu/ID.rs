@@ -1,6 +1,6 @@
 use crate::cpu::pimcpu_types::*;
 use crate::cpu::pipeline::CPU;
-use crate::cpu::signal_scoreboard::{pipeline_action, signal_reason, signal_req, SigFSM};
+use crate::cpu::signal_scoreboard::{SigFSM, pipeline_action, signal_reason, signal_req};
 
 use crate::cpu::RF::arch_rf;
 

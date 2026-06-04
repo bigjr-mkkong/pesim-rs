@@ -1,20 +1,20 @@
-use crate::cpu::imem::IMEM;
-use crate::cpu::pimcpu_types::{arch_action, CPU_stages};
 use crate::cpu::RF::arch_rf;
+use crate::cpu::imem::IMEM;
+use crate::cpu::pimcpu_types::{CPU_stages, arch_action};
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use crate::cpu::signal_scoreboard::{
-    pipeline_action, sig_resolver, signal_reason, signal_req, ExternalPause_FSM,
-};
 use crate::cpu::AGU::{AGU_MEM_rf, AGU_stop_FSM};
 use crate::cpu::EX::{EX_AGU_rf, EX_stop_FSM, RAW_resolution_FSM};
 use crate::cpu::ID::{ID_EX_rf, ID_jump_FSM};
 use crate::cpu::IF::IF_ID_rf;
-use crate::cpu::MEM::{MEM_stop_FSM, MEM_WB_RF};
+use crate::cpu::MEM::{MEM_WB_RF, MEM_stop_FSM};
+use crate::cpu::signal_scoreboard::{
+    ExternalPause_FSM, pipeline_action, sig_resolver, signal_reason, signal_req,
+};
+use crate::memory::AGU_unit::AGU_unit;
 use crate::memory::flat_memory::flat_mem;
 use crate::memory::mem_portal::dram_portal;
-use crate::memory::AGU_unit::AGU_unit;
 
 pub const PC_TESTING: u16 = 0xffff;
 

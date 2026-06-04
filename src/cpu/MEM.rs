@@ -1,7 +1,7 @@
-use crate::cpu::pimcpu_types::{arch_action, fatptr_rf, CPU_stages, DMAop, WBop};
-use crate::cpu::pipeline::CPU;
-use crate::cpu::signal_scoreboard::{pipeline_action, signal_reason, signal_req, SigFSM};
 use crate::cpu::AGU::AGU_MEM_rf;
+use crate::cpu::pimcpu_types::{CPU_stages, DMAop, WBop, arch_action, fatptr_rf};
+use crate::cpu::pipeline::CPU;
+use crate::cpu::signal_scoreboard::{SigFSM, pipeline_action, signal_reason, signal_req};
 use std::collections::{HashMap, HashSet};
 
 use crate::memory::flat_memory::flat_mem;
@@ -321,7 +321,6 @@ impl SigFSM for MEM_stop_FSM {
             MEM_stop_FSM_states::Stall => {
                 if let (Some(req), Some(dram_port)) = (&self.req, &mut self.dram_port) {
                     if dram_port.take_completed(req).is_some() {
-                        println!("MEM unblocked");
                         MEM_stop_FSM_states::WriteBack
                     } else {
                         MEM_stop_FSM_states::Stall

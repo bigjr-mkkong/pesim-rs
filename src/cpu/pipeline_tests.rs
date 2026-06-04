@@ -1,6 +1,6 @@
-use crate::cpu::pimcpu_types::{fatptr_rf, inst, CPU_stages};
-use crate::cpu::signal_scoreboard::{signal_reason, signal_req};
 use crate::CPU;
+use crate::cpu::pimcpu_types::{CPU_stages, fatptr_rf, inst};
+use crate::cpu::signal_scoreboard::{signal_reason, signal_req};
 use std::collections::HashSet;
 #[cfg(test)]
 mod tests {
@@ -488,7 +488,7 @@ mod tests {
                 pimcpu.signal_pause();
             }
 
-            if cycl > 10 && pimcpu.ready4signal() && pause_once{
+            if cycl > 10 && pimcpu.ready4signal() && pause_once {
                 pimcpu.signal_resume();
                 pause_once = false;
             }
@@ -497,5 +497,4 @@ mod tests {
 
         assert_eq!(pimcpu.get_RF().read_vregs(4), [777; 4]);
     }
-    
 }

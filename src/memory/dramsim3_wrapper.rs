@@ -129,12 +129,10 @@ impl dramsim3_wrapper {
     }
 
     fn read_handler(&mut self, addr: u64) -> dram_req {
-        println!("Read finished");
         Self::pop_completed(&mut self.pend_read, addr, "read_handler")
     }
 
     fn write_handler(&mut self, addr: u64) -> dram_req {
-        println!("Write finished");
         Self::pop_completed(&mut self.pend_write, addr, "write_handler")
     }
 
@@ -176,6 +174,14 @@ impl dramsim3_wrapper {
 
     pub fn get_clock_tick(&mut self) -> i32 {
         return dramsim3_ext::GetClock(self.ms.pin_mut());
+    }
+
+    pub fn GetPimMode(&mut self) -> bool {
+        dramsim3_ext::GetPimMode(self.ms.pin_mut())
+    }
+
+    pub fn SetPimMode(&mut self, new_mode: bool) {
+        dramsim3_ext::SetPimMode(self.ms.pin_mut(), new_mode);
     }
 
     pub fn get_pend_read(&mut self, addr: u64, is_pim: bool) -> i32 {

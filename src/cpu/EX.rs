@@ -1,8 +1,8 @@
-use crate::cpu::pimcpu_types::{arch_action, AGUop, ALUop, CPU_stages, DMAop, WBop};
+use crate::cpu::pimcpu_types::{AGUop, ALUop, CPU_stages, DMAop, WBop, arch_action};
 use crate::cpu::pipeline::CPU;
 
-use crate::cpu::signal_scoreboard::{pipeline_action, signal_reason, signal_req, SigFSM};
 use crate::cpu::ID::ID_EX_rf;
+use crate::cpu::signal_scoreboard::{SigFSM, pipeline_action, signal_reason, signal_req};
 
 use std::collections::{HashMap, HashSet};
 pub struct EX_AGU_rf {
