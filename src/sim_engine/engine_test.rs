@@ -7,8 +7,8 @@ use crate::memory::mem_portal::dram_req;
 use crate::sim_engine::engine::Engine;
 
 pub fn engine_runs_pim_load_through_mem_fsm_and_dram_portal() {
-    let mut engine = Engine::new_pim_only();
-    // let mut engine = Engine::new_scheduled_host_pim();
+    // let mut engine = Engine::new_pim_only();
+    let mut engine = Engine::new_scheduled_host_pim();
 
     engine.get_cpu().get_agu().insert(0, 0, 16);
     engine
@@ -30,6 +30,8 @@ pub fn engine_runs_pim_load_through_mem_fsm_and_dram_portal() {
     }
 
     assert_eq!(engine.get_cpu().get_RF().read_vregs(3), [42; 4]);
+    assert_eq!(engine.get_cpu().get_RF().read_vregs(4), [42; 4]);
+    assert_eq!(engine.get_cpu().get_RF().read_vregs(5), [42; 4]);
 }
 
 #[test]

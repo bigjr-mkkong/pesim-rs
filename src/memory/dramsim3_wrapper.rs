@@ -181,7 +181,9 @@ impl dramsim3_wrapper {
     }
 
     pub fn SetPimMode(&mut self, new_mode: bool) {
-        dramsim3_ext::SetPimMode(self.ms.pin_mut(), new_mode);
+        if self.GetPimMode() != new_mode {
+            dramsim3_ext::SetPimMode(self.ms.pin_mut(), new_mode);
+        }
     }
 
     pub fn get_pend_read(&mut self, addr: u64, is_pim: bool) -> i32 {

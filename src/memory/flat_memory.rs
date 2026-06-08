@@ -1,16 +1,3 @@
-/*
- * TODO:
- * The actual interface with DRAMSim3 should be little bit complex. Some arbeiter in between flat
- * model and dram timing should be established so it can communicate with simulator high level for
- * AddTransaction()
- *
- * Another thing is pe controller(the one receive PIM_start, PIM_pause and PIM_resume) shoud also
- * talk with high level simulator. abstraction design in between worth for more thought
- *
- * Also, previous error handling should all use Result instead of eprintln!() with Option
- * Let's focus on flat memory model first, and then the timing shit
- */
-
 use crate::cpu::pimcpu_types::fatptr_rf;
 use rustc_hash::FxHashMap;
 

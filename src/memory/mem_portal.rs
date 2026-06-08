@@ -96,6 +96,13 @@ impl dram_portal {
         self.host_reqcnt
     }
 
+    pub fn req_drained_for_mode(&self, mode: portal_mode) -> bool {
+        match mode {
+            portal_mode::PIM => self.simcpu_req.borrow().is_empty(),
+            portal_mode::HOST => self.host_req.borrow().is_empty(),
+        }
+    }
+
     pub fn submit(&mut self, req: portal_req) {
         match req {
             portal_req::PIM_REQ { req } => {
