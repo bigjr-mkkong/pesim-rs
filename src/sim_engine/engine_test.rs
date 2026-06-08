@@ -19,7 +19,7 @@ pub fn engine_runs_pim_load_through_mem_fsm_and_dram_portal() {
     engine.get_cpu().get_RF().write_vregs(3, [0; 4]);
 
     let prog = [
-        inst::LD128 { rd: 3, frs: 0 }, 
+        inst::LD128 { rd: 3, frs: 0 },
         inst::LD128 { rd: 4, frs: 0 },
         inst::LD128 { rd: 5, frs: 0 },
     ];
@@ -41,6 +41,9 @@ fn dramsim3_wrapper_test() {
     dsim3.SetPimMode(true);
 
     if dsim3.WillAcceptTransaction(0, false) {
+        let mut req = req;
+        req.set_id(dsim3.get_req_id());
+        req.set_issue_time(0);
         dsim3.AddTransactionReq(req);
     }
 

@@ -35,6 +35,7 @@ pub struct Engine {
     MEM_req_watermarkL: u64,
     MEM_tick_rec: u64,
     first_host_switch_started: bool,
+    clock_cycle: u64,
 }
 
 impl Engine {
@@ -94,6 +95,7 @@ impl Engine {
             MEM_req_watermarkL: BATCH_SZ,
             MEM_tick_rec: 0,
             first_host_switch_started: host_only,
+            clock_cycle: 0,
         }
     }
 
@@ -255,7 +257,7 @@ impl Engine {
 
     fn drain_current_port_to_dram(&mut self) {
         loop {
-            let Some(req) = self.dram_port.get_one_req() else {
+            let Some(mut req) = self.dram_port.get_one_req() else {
                 break;
             };
 
@@ -264,6 +266,8 @@ impl Engine {
             let addr = req.get_addr();
 
             if self.dsim3.WillAcceptTransaction(addr, is_write) {
+                req.set_id(self.dsim3.get_req_id());
+                req.set_issue_time(self.clock_cycle);
                 self.dsim3.AddTransactionReq(req);
             } else {
                 if is_pim {
@@ -290,5 +294,6 @@ impl Engine {
 
         self.schedule();
         self.mode = self.next_mode;
+        self.clock_cycle += 1;
     }
 }

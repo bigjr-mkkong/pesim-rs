@@ -2,23 +2,11 @@ use crate::CPU;
 use std::cell::RefCell;
 use std::rc::Rc;
 
-/*
- * TODO
- *  Add issue_time field in type of Option<u64>
- *  This field will track the issue time of each request.
- *  The difference between issue_time and id is id is differ per AddTransactionReq(), but issue_time
- *  for multiple req can be the same.
- *  issue_time should keep None at initial time and can only be set by
- *  Engine::drain_current_port_to_dram().
- *
- *  For Engine struct, also implement the clock cycle counter to track ticks so it can assign
- *  correct tick to requests it's trying to send to MC
- *
- */
 #[derive(Clone)]
 pub struct dram_req {
     addr: u64,
     id: Option<u64>,
+    issue_time: Option<u64>,
     is_read: bool,
     is_pim: bool,
 }
@@ -28,13 +16,26 @@ impl dram_req {
         Self {
             addr,
             id: None,
+            issue_time: None,
             is_read: is_read_,
             is_pim: is_pim_,
         }
     }
 
-    pub fn set_id(&mut self, new_id: u64) {
+    pub(crate) fn set_id(&mut self, new_id: u64) {
+        if self.id.is_some() {
+            panic!("Cannot overwrite request id");
+        }
+
         self.id = Some(new_id)
+    }
+
+    pub(crate) fn set_issue_time(&mut self, issue_time: u64) {
+        if self.issue_time.is_some() {
+            panic!("Cannot overwrite request issue time");
+        }
+
+        self.issue_time = Some(issue_time);
     }
 
     pub fn get_addr(&self) -> u64 {
@@ -43,6 +44,20 @@ impl dram_req {
 
     pub fn get_id(&self) -> Option<u64> {
         self.id
+    }
+
+    pub fn get_issue_time(&self) -> Option<u64> {
+        self.issue_time
+    }
+
+    pub(crate) fn assert_legal_for_issue(&self) {
+        if self.id.is_none() {
+            panic!("Cannot issue request: request id is missing");
+        }
+
+        if self.issue_time.is_none() {
+            panic!("Cannot issue request: issue time is missing");
+        }
     }
 
     pub fn is_read(&self) -> bool {

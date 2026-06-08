@@ -30,7 +30,7 @@ impl dramsim3_wrapper {
         }
     }
 
-    fn get_req_id(&mut self) -> u64 {
+    pub(crate) fn get_req_id(&mut self) -> u64 {
         let id = self.req_id;
         self.req_id += 1;
         id
@@ -216,19 +216,21 @@ impl dramsim3_wrapper {
     }
 
     pub fn AddTransaction(&mut self, addr: u64, is_write: bool, is_pim: bool) {
-        let d_req = dram_req::new(addr, !is_write, is_pim);
+        let mut d_req = dram_req::new(addr, !is_write, is_pim);
+        d_req.set_id(self.get_req_id());
+        d_req.set_issue_time(self.get_clock_tick() as u64);
         self.AddTransactionReq(d_req);
     }
 
-    pub fn AddTransactionReq(&mut self, mut req: dram_req) {
+    pub fn AddTransactionReq(&mut self, req: dram_req) {
+        req.assert_legal_for_issue();
+
         let real_addr = self.translate_addr(req.get_addr(), req.is_pim());
         let is_write = !req.is_read();
         let ret =
             dramsim3_ext::AddTransaction(self.ms.pin_mut(), real_addr, is_write, req.is_pim());
 
         if ret == true {
-            req.set_id(self.get_req_id());
-
             if is_write == true {
                 Self::push_pending(&mut self.pend_write, real_addr, req);
             } else {
