@@ -2,6 +2,19 @@ use crate::CPU;
 use std::cell::RefCell;
 use std::rc::Rc;
 
+/*
+ * TODO
+ *  Add issue_time field in type of Option<u64>
+ *  This field will track the issue time of each request.
+ *  The difference between issue_time and id is id is differ per AddTransactionReq(), but issue_time
+ *  for multiple req can be the same.
+ *  issue_time should keep None at initial time and can only be set by
+ *  Engine::drain_current_port_to_dram().
+ *
+ *  For Engine struct, also implement the clock cycle counter to track ticks so it can assign
+ *  correct tick to requests it's trying to send to MC
+ *
+ */
 #[derive(Clone)]
 pub struct dram_req {
     addr: u64,
