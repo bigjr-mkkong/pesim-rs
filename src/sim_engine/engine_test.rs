@@ -6,9 +6,9 @@ use crate::memory::dramsim3_wrapper::dramsim3_wrapper;
 use crate::memory::mem_portal::dram_req;
 use crate::sim_engine::engine::Engine;
 
-#[test]
 pub fn engine_runs_pim_load_through_mem_fsm_and_dram_portal() {
     let mut engine = Engine::new_pim_only();
+    // let mut engine = Engine::new_scheduled_host_pim();
 
     engine.get_cpu().get_agu().insert(0, 0, 16);
     engine
@@ -18,7 +18,11 @@ pub fn engine_runs_pim_load_through_mem_fsm_and_dram_portal() {
     engine.get_cpu().get_fmem().mem_write_data(0, &[42; 4]);
     engine.get_cpu().get_RF().write_vregs(3, [0; 4]);
 
-    let prog = [inst::LD128 { rd: 3, frs: 0 }];
+    let prog = [
+        inst::LD128 { rd: 3, frs: 0 }, 
+        inst::LD128 { rd: 4, frs: 0 },
+        inst::LD128 { rd: 5, frs: 0 },
+    ];
     engine.get_cpu().get_imem().flash_in(&prog);
 
     for _cycle in 0..10_000 {

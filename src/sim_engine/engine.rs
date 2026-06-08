@@ -37,6 +37,11 @@ pub struct Engine {
 }
 
 impl Engine {
+    /*
+     * TODO
+     * We also need a host_only mode where engine only sitting in Host mode and receive request and
+     * return completed request.
+     */
     pub fn new() -> Self {
         Self::new_pim_only()
     }
@@ -51,6 +56,7 @@ impl Engine {
 
     pub fn with_scheduling_mode(scheduling_mode: EngineSchedulingMode) -> Self {
         let mut dram_port = dram_portal::new();
+
         dram_port.set_mode(portal_mode::PIM);
 
         let mut dsim3 = dramsim3_wrapper::new(DSIM3_CFG_PATH, DSIM3_OUT_DIR, 0, 0, 0, 0);
@@ -82,7 +88,14 @@ impl Engine {
     }
 
     /*
-     *Host -> SW_stale -> PIM -> SW_stale -> Host
+     * switch() simulate following automata
+     * Host -> SW_stale(self-looping) -> PIM -> SW_stale(self-looping) -> Host
+     * TODO:
+     * SW_stale is self-looping state, which means it's possible to switch from switch_delay to
+     * switch_delay
+     * Modify the statemachine for it to ensure it only switch to another mode if requirement are
+     * being satisfied.
+     *
      */
     fn switch(&mut self, from: EngineMode) {
         if let EngineMode::PIM = from {
@@ -124,20 +137,21 @@ impl Engine {
             return;
         }
 
-        self.next_mode = self.mode;
-
         match self.mode {
             EngineMode::PIM => {
-                //TODO
-                //Having a real schedule algorithm
-                // if self.PIM_tick_watermark <= self.PIM_tick_rec {
-                //     self.sim_cpu.signal_pause(); //Signal sim_cpu to stop
-                //     self.switch(EngineMode::PIM);
-                // } else {
-                //     self.PIM_tick_rec += 1;
-                // }
-                self.PIM_tick_rec += 1;
+                if self.PIM_tick_watermark <= self.PIM_tick_rec {
+                    self.sim_cpu.signal_pause(); //Signal sim_cpu to stop
+                    self.switch(self.mode);
+                } else {
+                    self.PIM_tick_rec += 1;
+                }
             }
+
+            /*
+             * Although schedule() suppose to be combinational, dsim3 will internally handle request
+             * one by one. In this case, it's okey to blaze all request from Host to dram_port as we
+             * assume switching happened between req-buffer and DDR queue
+             */
             EngineMode::HOST => {
                 while let Some(req) = self.host_pool.pop() {
                     self.dram_port.submit(req);
@@ -146,11 +160,24 @@ impl Engine {
 
                     if self.MEM_tick_rec > self.MEM_req_watermarkL {
                         self.sim_cpu.signal_resume();
-                        self.switch(EngineMode::HOST);
+                        self.switch(self.mode);
                         break;
                     }
                 }
             }
+            /*
+             * TODO
+             * Logic here should be:
+             * If it's coming from PIM, then check if requirement has been satisfied
+             *      if satisfied, swich to mem
+             *      otherwise, don't change anything and stay in switch_delay
+             * If it's coming from MEM, also check if the requirement has been satisfied.
+             *      if satisfied, switch to pim
+             *      otherwise, don't change anything and stay
+             *
+             *  Also make changes in switch()
+             *
+             */
             EngineMode::switch_delay => {
                 if let EngineMode::PIM = self.coming_from_mode {
                     if self.sim_cpu.ready4signal()
@@ -167,6 +194,9 @@ impl Engine {
         }
     }
 
+    /*
+     * This is the function used by Host to send request
+     */
     pub fn host_push_req(&mut self, req: portal_req) {
         self.host_pool.push(req);
     }
@@ -199,10 +229,6 @@ impl Engine {
     }
 
     pub fn tick(&mut self) {
-        if let EngineSchedulingMode::PimOnly = self.scheduling_mode {
-            self.force_pim_mode();
-        }
-
         self.sim_cpu.tick(); // This tick will eat previous commited dram_req or generate new dram_req
         self.drain_active_port_to_dram();
 
