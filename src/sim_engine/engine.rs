@@ -1,8 +1,8 @@
-use crate::memory::dramsim3_wrapper::dramsim3_wrapper;
-use crate::memory::mem_portal::{dram_portal, portal_mode, portal_req};
 use crate::CPU;
 use crate::DSIM3_CFG_PATH;
 use crate::DSIM3_OUT_DIR;
+use crate::memory::dramsim3_wrapper::dramsim3_wrapper;
+use crate::memory::mem_portal::{dram_portal, portal_mode, portal_req};
 
 const BATCH_SZ: u64 = 0;
 
@@ -34,6 +34,7 @@ pub struct Engine {
     PIM_tick_rec: u64,
     MEM_req_watermarkL: u64,
     MEM_tick_rec: u64,
+    first_host_switch_started: bool,
 }
 
 impl Engine {
@@ -92,6 +93,7 @@ impl Engine {
             PIM_tick_rec: 0,
             MEM_req_watermarkL: BATCH_SZ,
             MEM_tick_rec: 0,
+            first_host_switch_started: host_only,
         }
     }
 
@@ -123,12 +125,17 @@ impl Engine {
 
     fn switch(&mut self, from: EngineMode) {
         match from {
-            EngineMode::PIM => { // From PIM to HOST
+            EngineMode::PIM => {
+                // From PIM to HOST.  Once this path is taken, subsequent PIM
+                // windows use the measured host-service watermark instead of
+                // the initial host-queue-depth threshold.
+                self.first_host_switch_started = true;
                 self.PIM_tick_rec = 0;
                 self.next_mode = EngineMode::switch_delay;
                 self.last_service_mode = EngineMode::PIM;
             }
-            EngineMode::HOST => {// From HOST to PIM
+            EngineMode::HOST => {
+                // From HOST to PIM
                 self.PIM_tick_watermark = self.MEM_tick_rec;
                 self.MEM_tick_rec = 0;
                 self.next_mode = EngineMode::switch_delay;
@@ -197,7 +204,15 @@ impl Engine {
 
         match self.mode {
             EngineMode::PIM => {
-                if self.PIM_tick_watermark <= self.PIM_tick_rec && !self.host_pool.is_empty() {
+                let should_switch_to_host = if self.first_host_switch_started {
+                    // PIM->HOST condition for all rest of time
+                    self.PIM_tick_watermark <= self.PIM_tick_rec && !self.host_pool.is_empty()
+                } else {
+                    // PIM->HOST confition for first time
+                    (self.host_pool.len() as u64) > self.MEM_req_watermarkL
+                };
+
+                if should_switch_to_host {
                     self.sim_cpu.signal_pause(); //Signal sim_cpu to stop
                     self.switch(self.mode);
                 } else {
@@ -206,11 +221,11 @@ impl Engine {
             }
 
             EngineMode::HOST => {
-            /*
-             * Although schedule() suppose to be combinational, dsim3 will internally handle request
-             * one by one. In this case, it's okey to blaze all request from Host to dram_port as we
-             * assume switching happened between req-buffer and DDR queue
-             */
+                /*
+                 * Although schedule() suppose to be combinational, dsim3 will internally handle request
+                 * one by one. In this case, it's okey to blaze all request from Host to dram_port as we
+                 * assume switching happened between req-buffer and DDR queue
+                 */
                 while let Some(req) = self.host_pool.pop() {
                     self.dram_port.submit(req);
                     self.MEM_tick_rec += 1;
