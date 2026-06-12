@@ -95,6 +95,12 @@ pub struct dram_portal {
     host_reqcnt: u64,
 }
 
+// A dram_portal is only shared inside one Engine (between that Engine and its CPU).
+// Sim moves each whole Engine to a scoped worker thread for tick(), so portal clones
+// are not accessed from multiple threads at the same time. Keeping Rc<RefCell<_>>
+// avoids unnecessary locking on this thread-local path.
+unsafe impl Send for dram_portal {}
+
 impl dram_portal {
     pub fn new() -> Self {
         Self {
@@ -158,28 +164,60 @@ impl dram_portal {
         }
     }
 
-    // TODO
-    // This function looks extremly similiar to the one below. I think they are fundamentally doing
-    // the same job.
-    // Task:
-    // Merge them into one function, do not change MEM.rs implementation. If needed change sim.rs
-    pub fn take_completed(&mut self, req: &dram_req) -> Option<dram_req> {
-        let resp = if req.is_pim() {
+    fn take_response(&mut self, is_pim: bool, expected: Option<&dram_req>) -> Option<dram_req> {
+        let resp = if is_pim {
             &self.simcpu_resp
         } else {
             &self.host_resp
         };
         let mut resp = resp.borrow_mut();
-        let pos = resp.iter().position(|done| req.matches_completion(done));
 
-        pos.map(|idx| resp.remove(idx))
+        match expected {
+            Some(req) => resp
+                .iter()
+                .position(|done| req.matches_completion(done))
+                .map(|idx| resp.remove(idx)),
+            None => resp.pop(),
+        }
+    }
+
+    pub fn take_completed(&mut self, req: &dram_req) -> Option<dram_req> {
+        self.take_response(req.is_pim(), Some(req))
     }
 
     pub fn take_host_completed(&mut self) -> Option<dram_req> {
-        self.host_resp.borrow_mut().pop()
+        self.take_response(false, None)
     }
 
     pub fn host_has_complete(&self) -> bool {
         !self.host_resp.borrow().is_empty()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn take_completed_preserves_expected_response_matching() {
+        let mut portal = dram_portal::new();
+        let expected_pim = dram_req::new(0x10, true, true);
+        let other_pim = dram_req::new(0x20, true, true);
+        let same_addr_host = dram_req::new(0x10, true, false);
+
+        portal.complete(other_pim.clone());
+        portal.complete(expected_pim.clone());
+        portal.complete(same_addr_host.clone());
+
+        let completed = portal
+            .take_completed(&expected_pim)
+            .expect("expected matching PIM response");
+        assert_eq!(completed.get_addr(), expected_pim.get_addr());
+        assert_eq!(completed.is_read(), expected_pim.is_read());
+        assert_eq!(completed.is_pim(), expected_pim.is_pim());
+
+        assert!(portal.take_completed(&expected_pim).is_none());
+        assert!(portal.take_completed(&other_pim).is_some());
+        assert!(portal.take_completed(&same_addr_host).is_some());
     }
 }

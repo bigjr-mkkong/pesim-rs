@@ -16,6 +16,10 @@ pub struct dramsim3_wrapper {
     req_id: u64,
 }
 
+// Each wrapper owns a distinct DRAMsim3 instance. Sim ticks different wrappers
+// on different threads, but never shares one wrapper between threads concurrently.
+unsafe impl Send for dramsim3_wrapper {}
+
 impl dramsim3_wrapper {
     pub fn new(cfg_path: &str, out_dir: &str, ch_: u64, ra_: u64, bg_: u64, ba_: u64) -> Self {
         dramsim3_wrapper {
@@ -36,7 +40,7 @@ impl dramsim3_wrapper {
         id
     }
 
-    fn translate_addr(&mut self, addr: u64, is_pim: bool) -> u64 {
+    fn request_addr_to_dram_addr(&mut self, addr: u64, is_pim: bool) -> u64 {
         if !is_pim {
             return addr;
         }
@@ -56,14 +60,7 @@ impl dramsim3_wrapper {
         dramsim3_ext::BankLocalToGlobalAddr(self.ms.pin_mut(), &addr_bulk)
     }
 
-    /*
-     * TODO
-     * Distinguish this function with the above translate_addr helper
-     * Above one is only being used in wrapper, this one need to expose to Sim
-     * Task:
-     * Modify the name so they can distinguish from each other
-     */
-    pub fn global2local_addr_translate(&mut self, addr: u64) -> local_addr_bulk {
+    pub fn global_addr_to_local_components(&mut self, addr: u64) -> local_addr_bulk {
         dramsim3_ext::GlobalToLocalAddr(self.ms.pin_mut(), addr)
     }
 
@@ -198,17 +195,17 @@ impl dramsim3_wrapper {
     }
 
     pub fn get_pend_read(&mut self, addr: u64, is_pim: bool) -> i32 {
-        let real_addr = self.translate_addr(addr, is_pim);
+        let real_addr = self.request_addr_to_dram_addr(addr, is_pim);
         Self::queue_len(&self.pend_read, real_addr)
     }
 
     pub fn get_pend_write(&mut self, addr: u64, is_pim: bool) -> i32 {
-        let real_addr = self.translate_addr(addr, is_pim);
+        let real_addr = self.request_addr_to_dram_addr(addr, is_pim);
         Self::queue_len(&self.pend_write, real_addr)
     }
 
     pub fn try_commit_req(&mut self, req: dram_req) -> bool {
-        let addr = self.translate_addr(req.get_addr(), req.is_pim());
+        let addr = self.request_addr_to_dram_addr(req.get_addr(), req.is_pim());
         let id = req.get_id().expect("Cannot commit an unsubmitted request");
 
         if req.is_read() {
@@ -236,7 +233,7 @@ impl dramsim3_wrapper {
     pub fn AddTransactionReq(&mut self, req: dram_req) {
         req.assert_legal_for_issue();
 
-        let real_addr = self.translate_addr(req.get_addr(), req.is_pim());
+        let real_addr = self.request_addr_to_dram_addr(req.get_addr(), req.is_pim());
         let is_write = !req.is_read();
         let ret =
             dramsim3_ext::AddTransaction(self.ms.pin_mut(), real_addr, is_write, req.is_pim());

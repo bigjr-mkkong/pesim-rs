@@ -83,7 +83,7 @@ impl signal_req {
     }
 }
 
-pub trait SigFSM: SigFSMClone {
+pub trait SigFSM: SigFSMClone + Send {
     fn reason(&self) -> signal_reason;
 
     // action is the arbitration class used to rank this signal.  The actual

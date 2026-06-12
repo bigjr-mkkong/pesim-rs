@@ -3,4 +3,4 @@
 /third-party/DRAMsim3
 **/target
 Cargo.lock
-
+/cfg

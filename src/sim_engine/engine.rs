@@ -255,6 +255,10 @@ impl Engine {
         self.host_pool.push(req);
     }
 
+    pub fn canAccept(&mut self, addr: u64, is_write: bool) -> bool {
+        self.dsim3.WillAcceptTransaction(addr, is_write)
+    }
+
     fn drain_current_port_to_dram(&mut self) {
         loop {
             let Some(mut req) = self.dram_port.get_one_req() else {
@@ -286,7 +290,7 @@ impl Engine {
     }
 
     pub fn host_has_complete(&self) -> bool {
-        self.host_has_complete()
+        self.dram_port.host_has_complete()
     }
 
     pub fn tick(&mut self) {
