@@ -6,14 +6,14 @@
  *      void printStats();
  *      void resetStats();
  *
- *      bool canAccept(uint64_t addr, bool is_write) const;
- *      void enqueue(uint64_t addr, bool is_write);
+ *      bool canAccept(uint64_t addr, bool is_write) const; //Done
+ *      void enqueue(uint64_t addr, bool is_write); //Done
  *
  *      double clockPeriod() const;
  *      unsigned int queueSize() const;
  *      unsigned int burstSize() const;
  *
- *      bool hasComplete() const;           // return true if any request from gem5 has completed
+ *      bool hasComplete() const;           // return true if any request from gem5 has completed,
  *      PEsim_rs_MemReq getComplete();      // return completed gem5 request
  *
  *      void tick();
@@ -140,7 +140,7 @@ impl Sim {
         self.dsim3.AddTransactionReq(req);
     }
 
-    pub fn has_complete(&self) -> bool {
+    pub fn hasComplete(&self) -> bool {
         if let SimMode::Host = self.sim_mode {
             return !self.dsim3_comp_queue.is_empty();
         }
@@ -149,7 +149,7 @@ impl Sim {
             || self.engines.values().any(|eng| eng.host_has_complete())
     }
 
-    pub fn get_complete(&mut self) -> Option<dram_req> {
+    pub fn getComplete(&mut self) -> Option<dram_req> {
         if let Some(req) = self.dsim3_comp_queue.pop() {
             return Some(req);
         }
