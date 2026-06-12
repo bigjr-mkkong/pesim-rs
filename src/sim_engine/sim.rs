@@ -40,6 +40,8 @@
 use crate::memory::dramsim3_wrapper::dramsim3_wrapper;
 use crate::memory::mem_portal::{dram_req, portal_req};
 use crate::sim_engine::engine::Engine;
+#[cfg(test)]
+use crate::sim_engine::engine::EngineSchedulingMode;
 use crate::{DSIM3_CFG_PATH, DSIM3_OUT_DIR};
 use std::collections::HashMap;
 
@@ -82,6 +84,51 @@ impl Sim {
                 ent.insert(Engine::new());
             }
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_mode_for_test(&mut self, sim_mode: SimMode) {
+        self.sim_mode = sim_mode;
+    }
+
+    #[cfg(test)]
+    pub(crate) fn add_engine_with_scheduling_for_test(
+        &mut self,
+        cfg: engine_cfg,
+        scheduling_mode: EngineSchedulingMode,
+    ) {
+        match self.engines.entry(cfg) {
+            std::collections::hash_map::Entry::Occupied(_) => {
+                panic!("Cannot add engine with given cfg: already existed");
+            }
+            std::collections::hash_map::Entry::Vacant(ent) => {
+                ent.insert(Engine::with_scheduling_mode(scheduling_mode));
+            }
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn cgo_engine_cfg_for_addr_for_test(&mut self, addr: u64) -> engine_cfg {
+        let addr_bulk = self.dsim3.global_addr_to_local_components(addr);
+
+        engine_cfg::CGO {
+            ch: addr_bulk.channel,
+            ra: addr_bulk.rank,
+            bg: addr_bulk.bank_group,
+            ba: addr_bulk.bank,
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn addr_maps_to_engine_for_test(&mut self, addr: u64) -> bool {
+        self.get_engine_cfg(addr).is_some()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn engine_mut_for_test(&mut self, cfg: engine_cfg) -> &mut Engine {
+        self.engines
+            .get_mut(&cfg)
+            .expect("Cannot find engine with given cfg")
     }
 
     pub fn canAccept(&mut self, addr: u64, is_write: bool) -> bool {
