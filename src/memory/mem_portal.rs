@@ -158,6 +158,11 @@ impl dram_portal {
         }
     }
 
+    // TODO
+    // This function looks extremly similiar to the one below. I think they are fundamentally doing
+    // the same job.
+    // Task:
+    // Merge them into one function, do not change MEM.rs implementation. If needed change sim.rs
     pub fn take_completed(&mut self, req: &dram_req) -> Option<dram_req> {
         let resp = if req.is_pim() {
             &self.simcpu_resp
@@ -168,5 +173,13 @@ impl dram_portal {
         let pos = resp.iter().position(|done| req.matches_completion(done));
 
         pos.map(|idx| resp.remove(idx))
+    }
+
+    pub fn take_host_completed(&mut self) -> Option<dram_req> {
+        self.host_resp.borrow_mut().pop()
+    }
+
+    pub fn host_has_complete(&self) -> bool {
+        !self.host_resp.borrow().is_empty()
     }
 }

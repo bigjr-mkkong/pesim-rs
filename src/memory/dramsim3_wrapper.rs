@@ -56,6 +56,17 @@ impl dramsim3_wrapper {
         dramsim3_ext::BankLocalToGlobalAddr(self.ms.pin_mut(), &addr_bulk)
     }
 
+    /*
+     * TODO
+     * Distinguish this function with the above translate_addr helper
+     * Above one is only being used in wrapper, this one need to expose to Sim
+     * Task:
+     * Modify the name so they can distinguish from each other
+     */
+    pub fn global2local_addr_translate(&mut self, addr: u64) -> local_addr_bulk {
+        dramsim3_ext::GlobalToLocalAddr(self.ms.pin_mut(), addr)
+    }
+
     fn queue_len(queue_map: &HashMap<u64, VecDeque<dram_req>>, addr: u64) -> i32 {
         queue_map.get(&addr).map_or(0, |queue| queue.len() as i32)
     }

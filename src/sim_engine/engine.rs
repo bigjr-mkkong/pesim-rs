@@ -2,7 +2,7 @@ use crate::CPU;
 use crate::DSIM3_CFG_PATH;
 use crate::DSIM3_OUT_DIR;
 use crate::memory::dramsim3_wrapper::dramsim3_wrapper;
-use crate::memory::mem_portal::{dram_portal, portal_mode, portal_req};
+use crate::memory::mem_portal::{dram_portal, dram_req, portal_mode, portal_req};
 
 const BATCH_SZ: u64 = 0;
 
@@ -279,6 +279,14 @@ impl Engine {
                 break;
             }
         }
+    }
+
+    pub fn get_host_complete(&mut self) -> Option<dram_req> {
+        self.dram_port.take_host_completed()
+    }
+
+    pub fn host_has_complete(&self) -> bool {
+        self.host_has_complete()
     }
 
     pub fn tick(&mut self) {
