@@ -26,7 +26,8 @@ pub struct Engine {
     dram_port: dram_portal,
     dsim3: dramsim3_wrapper,
     scheduling_mode: EngineSchedulingMode,
-    //Following are scheduler internal variables
+    clock_cycle: u64,
+    //Following are batched scheduler internal variables
     mode: EngineMode,
     next_mode: EngineMode,
     last_service_mode: EngineMode,
@@ -35,7 +36,7 @@ pub struct Engine {
     MEM_req_watermarkL: u64,
     MEM_tick_rec: u64,
     first_host_switch_started: bool,
-    clock_cycle: u64,
+    //Following are F3FS scheduler internal variables
 }
 
 impl Engine {
