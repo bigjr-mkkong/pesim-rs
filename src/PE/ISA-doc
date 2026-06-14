@@ -1,1 +1,22 @@
 Architectural resource:
+16 128-bit vRF, each entry is int16 * 8
+8 32-bit sRF
+vRF[0] hardwired to 0
+sRD[0] hardwired to 0
+
+one bank interface
+
+Instructions:
+LD128, vRD, addr
+ST128, vRS, addr
+LD32, sRD, addr
+LD32, sRS, addr
+ADD128 vRD, vRS0, vRS1
+SUB128 vRD, vRS0, vRS1
+MUL128 vRD, vRS0, vRS1
+MAC128 sRD, sRS0, vRS0, vRS1
+ReLU128 vRD, vRS0
+
+Arch design:
+
+IF-ID | EX MEM WB

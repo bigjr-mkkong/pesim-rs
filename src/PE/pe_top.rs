@@ -1,8 +1,11 @@
 /*
  * This directory describe the PE architecture for HBM-PIM liked PIM
- * A single-cycle/two cycle PE with no IF(directly receive instruction from host)
- * should be enough.
+ * A two cycle PE with no IF(directly receive instruction from host)
  *
- * NEXT:
- * Craft ISA for this PE
  */
+
+use crate::PE::ISSUE::ISSUE_EX_RF;
+
+pub struct PE{
+    issue_ex_rf: ISSUE_EX_RF
+}
