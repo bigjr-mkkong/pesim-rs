@@ -8,39 +8,86 @@
 // MAC128 sRD, sRS0, vRS0, vRS1
 // ReLU128 vRD, vRS0
 
-pub enum inst{
-    LD128   {vRD: u8, addr: u32},
-    ST128   {vRS: u8, addr: u32},
-    LD32    {sRD: u8, addr: u32},
-    ST32    {sRS: u8, addr: u32},
-    ADD128  {vRD: u8, vRS0: u8, vRS1: u8},
-    SUB128  {vRD: u8, vRS0: u8, vRS1: u8},
-    MUL128  {vRD: u8, vRS0: u8, vRS1: u8},
-    MAC128  {sRD: u8, sRS0: u8, vRS0: u8, vRS1: u8},
-    ReLU    {vRD: u8, vRS0: u8},
-    NOP
-}
-
-#[derive(Clone, Copy)]
-pub enum ALUop{
-    ADD     {vRS0_lit: [i16; 8], vRS1_lit: [i16; 8] },
-    SUB     {vRS0_lit: [i16; 8], vRS1_lit: [i16; 8] },
-    MUL     {vRS0_lit: [i16; 8], vRS1_lit: [i16; 8] },
-    MAC     {sRS0_lit: i32, vRS0_lit: [i16; 8], vRS1_lit: [i16; 8]},
-    ReLU    {vRS0_lit: [i16; 8]},
-    NOP
-}
-
-#[derive(Clone, Copy)]
-pub enum MEMop{
+pub enum inst {
+    LD128 {
+        vRD: u8,
+        addr: u32,
+    },
+    ST128 {
+        vRS: u8,
+        addr: u32,
+    },
+    LD32 {
+        sRD: u8,
+        addr: u32,
+    },
+    ST32 {
+        sRS: u8,
+        addr: u32,
+    },
+    ADD128 {
+        vRD: u8,
+        vRS0: u8,
+        vRS1: u8,
+    },
+    SUB128 {
+        vRD: u8,
+        vRS0: u8,
+        vRS1: u8,
+    },
+    MUL128 {
+        vRD: u8,
+        vRS0: u8,
+        vRS1: u8,
+    },
+    MAC128 {
+        sRD: u8,
+        sRS0: u8,
+        vRS0: u8,
+        vRS1: u8,
+    },
+    ReLU {
+        vRD: u8,
+        vRS0: u8,
+    },
     NOP,
-    Read    {addr: u32},
-    Write   {addr: u32}
 }
 
 #[derive(Clone, Copy)]
-pub enum WBop{
+pub enum ALUop {
+    ADD {
+        vRS0_lit: [i16; 8],
+        vRS1_lit: [i16; 8],
+    },
+    SUB {
+        vRS0_lit: [i16; 8],
+        vRS1_lit: [i16; 8],
+    },
+    MUL {
+        vRS0_lit: [i16; 8],
+        vRS1_lit: [i16; 8],
+    },
+    MAC {
+        sRS0_lit: i32,
+        vRS0_lit: [i16; 8],
+        vRS1_lit: [i16; 8],
+    },
+    ReLU {
+        vRS0_lit: [i16; 8],
+    },
     NOP,
-    VWrite      {vRD: u8},
-    SWrite      {sRD: u8}
+}
+
+#[derive(Clone, Copy)]
+pub enum MEMop {
+    NOP,
+    Read { addr: u32 },
+    Write { addr: u32 },
+}
+
+#[derive(Clone, Copy)]
+pub enum WBop {
+    NOP,
+    VWrite { vRD: u8 },
+    SWrite { sRD: u8 },
 }

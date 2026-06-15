@@ -15,8 +15,8 @@ fn main() {
     println!("WIP");
 }
 
+mod PE;
 mod cpu;
 mod errors;
 mod memory;
 mod sim_engine;
-mod PE;
