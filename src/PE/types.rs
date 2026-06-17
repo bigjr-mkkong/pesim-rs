@@ -81,8 +81,10 @@ pub enum ALUop {
 #[derive(Clone, Copy)]
 pub enum MEMop {
     NOP,
-    Read { addr: u32 },
-    Write { addr: u32 },
+    ReadV { addr: u32 },
+    WriteV { addr: u32, data: [i16; 8] },
+    ReadS { addr: u32 },
+    WriteS { addr: u32, data: i32 },
 }
 
 #[derive(Clone, Copy)]

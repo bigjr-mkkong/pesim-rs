@@ -1,11 +1,16 @@
 macro_rules! rfid_chk {
-    ($val:expr, $max_rf:expr) => {
-        if $val < $max_rf {
-            $val
-        } else {
-            panic!("PErf: Trying to read {} is out of bound", $val,);
+    ($val:expr, $max_rf:expr, $rf_name:expr) => {{
+        let id = $val as usize;
+
+        if id >= $max_rf {
+            panic!(
+                "PErf: Trying to access {}[{}] is out of bound",
+                $rf_name, id
+            );
         }
-    };
+
+        if id == 0 { None } else { Some(id) }
+    }};
 }
 
 const vRF_max: usize = 16;
@@ -19,25 +24,34 @@ pub struct arch_rf {
 impl arch_rf {
     pub fn new() -> Self {
         Self {
-            vRF: [[0; 8]; 16],
-            sRF: [0; 8],
+            vRF: [[0; 8]; vRF_max],
+            sRF: [0; sRF_max],
         }
     }
 
-    /*
-     * TODO
-     * rfid_chk() will only check if id is larger than max
-     * It will not check if ID is equal to 0 and should return an empty
-     * Task:
-     * #1 Implement a better version of rfid_chk
-     * #2 Implement Write functions for RF, details of write semantics can refer to src/PE/ISA-doc
-     */
     pub fn read_vRF(&self, id: u8) -> [i16; 8] {
-        if id == 0 {
-            return [0; 8];
-        } else {
-            let id = rfid_chk!(id as usize, vRF_max);
-            return self.vRF[id];
+        match rfid_chk!(id, vRF_max, "vRF") {
+            Some(id) => self.vRF[id],
+            None => [0; 8],
+        }
+    }
+
+    pub fn write_vRF(&mut self, id: u8, content: [i16; 8]) {
+        if let Some(id) = rfid_chk!(id, vRF_max, "vRF") {
+            self.vRF[id] = content;
+        }
+    }
+
+    pub fn read_sRF(&self, id: u8) -> i32 {
+        match rfid_chk!(id, sRF_max, "sRF") {
+            Some(id) => self.sRF[id],
+            None => 0,
+        }
+    }
+
+    pub fn write_sRF(&mut self, id: u8, content: i32) {
+        if let Some(id) = rfid_chk!(id, sRF_max, "sRF") {
+            self.sRF[id] = content;
         }
     }
 }
