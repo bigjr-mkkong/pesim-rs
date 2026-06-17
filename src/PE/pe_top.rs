@@ -24,6 +24,12 @@ impl PE {
     }
 
     pub fn tick() {
-        //This function will assemble each stage together and perform update over RF/MEM
+        /*
+         * TODO
+         * Implement pipeline control logic by placing ISSUE.rs and EX.rs eval functions here
+         * Use the same idea as src/cpu/pipeline.rs, but here we have a simplified model as PE only
+         * contain two stage
+         * In this case, the only signal need to be handled is MEM_stop
+         */
     }
 }
