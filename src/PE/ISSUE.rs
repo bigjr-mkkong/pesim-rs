@@ -2,6 +2,7 @@ use crate::PE::RF::arch_rf;
 use crate::PE::pe_top::PE;
 use crate::PE::types::{ALUop, MEMop, WBop, inst};
 
+#[derive(Clone, Copy)]
 pub struct ISSUE_EX_RF {
     aluop: ALUop,
     memop: MEMop,
@@ -31,7 +32,7 @@ impl ISSUE_EX_RF {
 }
 
 impl PE {
-    pub fn issue_ex_eval(read_inst: inst, arf: &arch_rf) -> ISSUE_EX_RF {
+    pub fn eval_ISSUE(read_inst: inst, arf: &arch_rf) -> ISSUE_EX_RF {
         match read_inst {
             inst::NOP => ISSUE_EX_RF {
                 aluop: ALUop::NOP,
@@ -47,7 +48,11 @@ impl PE {
                 let data = arf.read_vRF(vRS);
                 ISSUE_EX_RF {
                     aluop: ALUop::NOP,
-                    memop: MEMop::WriteV { addr, data: data },
+                    memop: MEMop::WriteV {
+                        addr,
+                        vRS,
+                        data: data,
+                    },
                     wbop: WBop::NOP,
                 }
             }
@@ -60,7 +65,11 @@ impl PE {
                 let data = arf.read_sRF(sRS);
                 ISSUE_EX_RF {
                     aluop: ALUop::NOP,
-                    memop: MEMop::WriteS { addr, data: data },
+                    memop: MEMop::WriteS {
+                        addr,
+                        sRS,
+                        data: data,
+                    },
                     wbop: WBop::NOP,
                 }
             }
@@ -69,6 +78,8 @@ impl PE {
                 let rs1_lit = arf.read_vRF(vRS1);
                 ISSUE_EX_RF {
                     aluop: ALUop::ADD {
+                        vRS0,
+                        vRS1,
                         vRS0_lit: rs0_lit,
                         vRS1_lit: rs1_lit,
                     },
@@ -81,6 +92,8 @@ impl PE {
                 let rs1_lit = arf.read_vRF(vRS1);
                 ISSUE_EX_RF {
                     aluop: ALUop::SUB {
+                        vRS0,
+                        vRS1,
                         vRS0_lit: rs0_lit,
                         vRS1_lit: rs1_lit,
                     },
@@ -93,6 +106,8 @@ impl PE {
                 let rs1_lit = arf.read_vRF(vRS1);
                 ISSUE_EX_RF {
                     aluop: ALUop::MUL {
+                        vRS0,
+                        vRS1,
                         vRS0_lit: rs0_lit,
                         vRS1_lit: rs1_lit,
                     },
@@ -111,6 +126,9 @@ impl PE {
                 let vrs1_lit = arf.read_vRF(vRS1);
                 ISSUE_EX_RF {
                     aluop: ALUop::MAC {
+                        sRS0,
+                        vRS0,
+                        vRS1,
                         sRS0_lit: srs0_lit,
                         vRS0_lit: vrs0_lit,
                         vRS1_lit: vrs1_lit,
@@ -122,13 +140,14 @@ impl PE {
             inst::ReLU { vRD, vRS0 } => {
                 let vrs0_lit = arf.read_vRF(vRS0);
                 ISSUE_EX_RF {
-                    aluop: ALUop::ReLU { vRS0_lit: vrs0_lit },
+                    aluop: ALUop::ReLU {
+                        vRS0,
+                        vRS0_lit: vrs0_lit,
+                    },
                     memop: MEMop::NOP,
                     wbop: WBop::VWrite { vRD: vRD },
                 }
             }
-        };
-
-        todo!()
+        }
     }
 }
