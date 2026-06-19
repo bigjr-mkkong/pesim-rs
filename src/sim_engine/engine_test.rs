@@ -7,8 +7,10 @@ use crate::memory::mem_portal::dram_req;
 use crate::sim_engine::engine::Engine;
 
 pub fn engine_runs_pim_load_through_mem_fsm_and_dram_portal() {
-    // let mut engine = Engine::new_pim_only();
-    let mut engine = Engine::new_scheduled_host_pim();
+    let mut engine = Engine::new_cgo();
+    engine
+        .set_scheduling_mode(crate::sim_engine::engine::EngineSchedulingMode::Host_CGO_share)
+        .expect("CGO engine should accept host/CGO scheduling");
 
     engine.get_cpu().get_agu().insert(0, 0, 16);
     engine

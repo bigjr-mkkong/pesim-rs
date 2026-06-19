@@ -40,7 +40,6 @@
 use crate::memory::dramsim3_wrapper::dramsim3_wrapper;
 use crate::memory::mem_portal::{dram_req, portal_req};
 use crate::sim_engine::engine::Engine;
-#[cfg(test)]
 use crate::sim_engine::engine::EngineSchedulingMode;
 use crate::{DSIM3_CFG_PATH, DSIM3_OUT_DIR};
 use std::collections::HashMap;
@@ -81,9 +80,24 @@ impl Sim {
                 panic!("Cannot add engine with given cfg: already existed");
             }
             std::collections::hash_map::Entry::Vacant(ent) => {
-                ent.insert(Engine::new());
+                let engine = match cfg {
+                    engine_cfg::CGO { .. } => Engine::new_cgo(),
+                    engine_cfg::FGO { .. } => Engine::new_fgo(),
+                };
+                ent.insert(engine);
             }
         }
+    }
+
+    pub fn set_engine_scheduling_mode(
+        &mut self,
+        cfg: engine_cfg,
+        scheduling_mode: EngineSchedulingMode,
+    ) -> Result<(), &'static str> {
+        self.engines
+            .get_mut(&cfg)
+            .ok_or("cannot configure scheduling for an engine that does not exist")?
+            .set_scheduling_mode(scheduling_mode)
     }
 
     #[cfg(test)]
@@ -102,7 +116,14 @@ impl Sim {
                 panic!("Cannot add engine with given cfg: already existed");
             }
             std::collections::hash_map::Entry::Vacant(ent) => {
-                ent.insert(Engine::with_scheduling_mode(scheduling_mode));
+                let mut engine = match cfg {
+                    engine_cfg::CGO { .. } => Engine::new_cgo(),
+                    engine_cfg::FGO { .. } => Engine::new_fgo(),
+                };
+                engine
+                    .set_scheduling_mode(scheduling_mode)
+                    .expect("test scheduling mode should match engine configuration");
+                ent.insert(engine);
             }
         }
     }

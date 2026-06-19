@@ -95,7 +95,7 @@ pub struct dram_portal {
     host_reqcnt: u64,
 }
 
-// A dram_portal is only shared inside one Engine (between that Engine and its CPU).
+// A dram_portal is only shared inside one Engine (between that Engine and its CPU or PE).
 // Sim moves each whole Engine to a scoped worker thread for tick(), so portal clones
 // are not accessed from multiple threads at the same time. Keeping Rc<RefCell<_>>
 // avoids unnecessary locking on this thread-local path.

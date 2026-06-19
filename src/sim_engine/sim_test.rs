@@ -165,6 +165,33 @@ fn assert_vecadd_result(engine: &mut Engine, expected: u32) {
     assert_eq!(cpu.get_fmem().mem_read_data(0), Some([expected; 4]));
 }
 
+#[test]
+fn sim_engine_cfg_selects_processor_but_not_scheduling_policy() {
+    let mut sim = Sim::new();
+    let fgo_cfg = engine_cfg::FGO {
+        ch: 0,
+        ra: 0,
+        bg: 0,
+        ba: 0,
+    };
+
+    sim.add_engines(fgo_cfg);
+    sim.set_engine_scheduling_mode(fgo_cfg, EngineSchedulingMode::Host_FGO_share)
+        .expect("FGO configuration should construct an FGO engine");
+    sim.engine_mut_for_test(fgo_cfg)
+        .get_pe()
+        .get_Arf()
+        .write_sRF(1, 7);
+
+    assert_eq!(
+        sim.engine_mut_for_test(fgo_cfg)
+            .get_pe()
+            .get_Arf()
+            .read_sRF(1),
+        7
+    );
+}
+
 fn tick_pim_program(sim: &mut Sim) {
     for _ in 0..PIM_PROGRAM_TICKS {
         sim.tick();
@@ -201,6 +228,8 @@ fn sim_pimonly() {
 
     let (_engine_addr, cfg) = find_addr_for_new_cgo_cfg(&mut sim, &[]);
     sim.add_engines(cfg);
+    sim.set_engine_scheduling_mode(cfg, EngineSchedulingMode::CGO_only)
+        .expect("CGO engine should accept CGO-only scheduling");
     configure_vecadd(sim.engine_mut_for_test(cfg), 1, 2);
 
     tick_pim_program(&mut sim);
@@ -226,6 +255,10 @@ fn sim_multithread_pimonly() {
 
     sim.add_engines(first_cfg);
     sim.add_engines(second_cfg);
+    sim.set_engine_scheduling_mode(first_cfg, EngineSchedulingMode::CGO_only)
+        .expect("CGO engine should accept CGO-only scheduling");
+    sim.set_engine_scheduling_mode(second_cfg, EngineSchedulingMode::CGO_only)
+        .expect("CGO engine should accept CGO-only scheduling");
     configure_vecadd(sim.engine_mut_for_test(first_cfg), 10, 5);
     configure_vecadd(sim.engine_mut_for_test(second_cfg), 20, 7);
 
@@ -250,6 +283,8 @@ fn sim_pim_host_together() {
 
     let (_engine_addr, cfg) = find_addr_for_new_cgo_cfg(&mut sim, &[]);
     sim.add_engines(cfg);
+    sim.set_engine_scheduling_mode(cfg, EngineSchedulingMode::CGO_only)
+        .expect("CGO engine should accept CGO-only scheduling");
     configure_vecadd(sim.engine_mut_for_test(cfg), 6, 9);
 
     let host_addrs = find_addrs_outside_engine_area(&mut sim, 2);
@@ -281,7 +316,7 @@ fn sim_pim_host_concurrent() {
     sim.set_mode_for_test(SimMode::Pim);
 
     let (_engine_addr, cfg) = find_addr_for_new_cgo_cfg(&mut sim, &[]);
-    sim.add_engine_with_scheduling_for_test(cfg, EngineSchedulingMode::ScheduledHostPim);
+    sim.add_engine_with_scheduling_for_test(cfg, EngineSchedulingMode::Host_CGO_share);
     configure_vecadd(sim.engine_mut_for_test(cfg), 11, 13);
 
     let host_addrs = find_addrs_inside_engine_area(&mut sim, 2);

@@ -65,6 +65,10 @@ impl PE {
         self.fetch_next_allowed = true;
     }
 
+    pub fn has_buffered_inst(&self) -> bool {
+        !self.imem.is_empty()
+    }
+
     pub fn has_finished(&mut self) -> bool {
         let finished = self.finished;
         self.finished = false;
@@ -445,6 +449,7 @@ fn PE_allow_next_fetches_one_buffered_instruction_test() {
         vRS0: 4,
         vRS1: 5,
     });
+    assert!(pe.has_buffered_inst());
 
     pe.allow_next();
     pe.tick();
@@ -453,6 +458,7 @@ fn PE_allow_next_fetches_one_buffered_instruction_test() {
     assert_eq!(read_vrf(&mut pe, 3), [9; 8]);
     assert_eq!(read_vrf(&mut pe, 6), [0; 8]);
     assert!(pe.has_finished());
+    assert!(pe.has_buffered_inst());
 
     pe.tick();
     assert_eq!(read_vrf(&mut pe, 6), [0; 8]);
@@ -464,6 +470,7 @@ fn PE_allow_next_fetches_one_buffered_instruction_test() {
 
     assert_eq!(read_vrf(&mut pe, 6), [17; 8]);
     assert!(pe.has_finished());
+    assert!(!pe.has_buffered_inst());
 }
 
 #[test]
