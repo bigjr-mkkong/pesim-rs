@@ -13,7 +13,7 @@ use crate::cpu::signal_scoreboard::{
     ExternalPause_FSM, pipeline_action, sig_resolver, signal_reason, signal_req,
 };
 use crate::memory::AGU_unit::AGU_unit;
-use crate::memory::flat_memory::flat_mem;
+use crate::memory::flat_memory::cpu_flat_mem;
 use crate::memory::mem_portal::dram_portal;
 
 pub const PC_TESTING: u16 = 0xffff;
@@ -30,7 +30,7 @@ pub struct CPU {
     pub(crate) wb_forward_rf: MEM_WB_RF,
     pub(crate) pipeline_ctrl: sig_resolver,
     pub(crate) agu: AGU_unit,
-    pub(crate) fmem: flat_mem,
+    pub(crate) fmem: cpu_flat_mem,
     ext_pause_requested: bool,
     ready4ext_sig: bool,
 }
@@ -62,7 +62,7 @@ impl CPU {
             wb_forward_rf: MEM_WB_RF::new(),
             pipeline_ctrl,
             agu: AGU_unit::new(),
-            fmem: flat_mem::new(),
+            fmem: cpu_flat_mem::new(),
             ext_pause_requested: false,
             ready4ext_sig: true,
         }
@@ -80,7 +80,7 @@ impl CPU {
         &mut self.RF
     }
 
-    pub fn get_fmem(&mut self) -> &mut flat_mem {
+    pub fn get_fmem(&mut self) -> &mut cpu_flat_mem {
         &mut self.fmem
     }
 

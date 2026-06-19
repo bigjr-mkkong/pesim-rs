@@ -6,10 +6,10 @@
 
 use crate::PE::ALU::{ALU_comp, ALU_out};
 use crate::PE::ISSUE::ISSUE_EX_RF;
-use crate::PE::flat_mem::flat_mem;
 use crate::PE::pe_top::PE;
 use crate::PE::types::{ALUop, MEMop, PE_stages, WBop, arch_action};
 use crate::cpu::signal_scoreboard::{pipeline_action, signal_reason};
+use crate::memory::flat_memory::pe_flat_mem;
 use std::collections::HashMap;
 
 #[derive(Clone, Copy)]
@@ -55,7 +55,7 @@ impl PE {
     pub fn eval_EX(
         &self,
         issue_ex_rf: &ISSUE_EX_RF,
-        fmem: &flat_mem,
+        fmem: &pe_flat_mem,
     ) -> (EX_WB_RF, signal_reason, Vec<arch_action>) {
         let bypassed_aluop = self.ex_bypass_aluop(issue_ex_rf.get_aluop());
         let mut ex_wb_next = EX_WB_RF {

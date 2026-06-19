@@ -4,7 +4,7 @@ use crate::cpu::pipeline::CPU;
 use crate::cpu::signal_scoreboard::{SigFSM, pipeline_action, signal_reason, signal_req};
 use std::collections::{HashMap, HashSet};
 
-use crate::memory::flat_memory::flat_mem;
+use crate::memory::flat_memory::cpu_flat_mem;
 use crate::memory::mem_portal::{dram_portal, dram_req, portal_req};
 
 #[derive(Clone, Copy)]
@@ -53,7 +53,7 @@ impl CPU {
     pub fn eval_MEM(
         &self,
         agu_mem_rf: &AGU_MEM_rf,
-        fmem: &flat_mem,
+        fmem: &cpu_flat_mem,
     ) -> (MEM_WB_RF, signal_req, Vec<arch_action>) {
         if !agu_mem_rf.is_valid() {
             (

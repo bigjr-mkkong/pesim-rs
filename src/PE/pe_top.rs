@@ -7,9 +7,9 @@
 use crate::PE::EX::{EX_WB_RF, MEM_stop_FSM};
 use crate::PE::ISSUE::ISSUE_EX_RF;
 use crate::PE::RF::arch_rf;
-use crate::PE::flat_mem::flat_mem;
 use crate::PE::types::{PE_stages, arch_action, inst};
 use crate::cpu::signal_scoreboard::pipeline_action;
+use crate::memory::flat_memory::pe_flat_mem;
 use std::collections::HashSet;
 
 pub struct PE {
@@ -17,7 +17,7 @@ pub struct PE {
     issue_ex_rf: ISSUE_EX_RF,
     pub(crate) ex_wb_forward_rf: EX_WB_RF,
     Arf: arch_rf,
-    fmem: flat_mem,
+    fmem: pe_flat_mem,
     mem_stop_fsm: MEM_stop_FSM,
 }
 
@@ -28,7 +28,7 @@ impl PE {
             issue_ex_rf: ISSUE_EX_RF::new(),
             ex_wb_forward_rf: EX_WB_RF::new(),
             Arf: arch_rf::new(),
-            fmem: flat_mem::new(),
+            fmem: pe_flat_mem::new(),
             mem_stop_fsm: MEM_stop_FSM::new(),
         }
     }
@@ -41,7 +41,7 @@ impl PE {
         &mut self.Arf
     }
 
-    pub fn get_fmem(&mut self) -> &mut flat_mem {
+    pub fn get_fmem(&mut self) -> &mut pe_flat_mem {
         &mut self.fmem
     }
 
@@ -116,48 +116,244 @@ impl PE {
     }
 }
 
+fn seed_vrf(pe: &mut PE, reg: u8, value: [i16; 8]) {
+    pe.get_Arf().write_vRF(reg, value);
+}
+
+fn seed_srf(pe: &mut PE, reg: u8, value: i32) {
+    pe.get_Arf().write_sRF(reg, value);
+}
+
+fn seed_mem_v(pe: &mut PE, addr: u32, value: [i16; 8]) {
+    pe.get_fmem().mem_write_v(addr, &value).unwrap();
+}
+
+fn seed_mem_s(pe: &mut PE, addr: u32, value: i32) {
+    pe.get_fmem().mem_write_s(addr, value).unwrap();
+}
+
+fn read_vrf(pe: &mut PE, reg: u8) -> [i16; 8] {
+    pe.get_Arf().read_vRF(reg)
+}
+
+fn read_srf(pe: &mut PE, reg: u8) -> i32 {
+    pe.get_Arf().read_sRF(reg)
+}
+
+fn read_mem_v(pe: &mut PE, addr: u32) -> [i16; 8] {
+    pe.get_fmem().mem_read_v(addr).unwrap()
+}
+
+fn read_mem_s(pe: &mut PE, addr: u32) -> i32 {
+    pe.get_fmem().mem_read_s(addr).unwrap()
+}
+
+fn run_rf_inst(pe: &mut PE, instruction: inst) -> usize {
+    pe.set_host_inst(instruction);
+    pe.tick();
+    pe.set_host_inst(inst::NOP);
+    pe.tick();
+    2
+}
+
+fn run_mem_inst_until(pe: &mut PE, instruction: inst, complete: impl Fn(&mut PE) -> bool) -> usize {
+    pe.set_host_inst(instruction);
+    pe.tick();
+    pe.set_host_inst(inst::NOP);
+
+    for cycles in 2..=128 {
+        pe.tick();
+        if complete(pe) {
+            return cycles;
+        }
+    }
+
+    panic!("memory instruction did not complete within 128 cycles");
+}
+
 #[test]
 fn PE_ADD_test() {
+    let mut pe = PE::new();
+    seed_vrf(&mut pe, 1, [1, 2, 3, 4, 5, 6, 7, 8]);
+    seed_vrf(&mut pe, 2, [8, 7, 6, 5, 4, 3, 2, 1]);
 
-    let mut PE_ins = PE::new();
-    let mut mem = PE_ins.get_fmem();
-    let mut arf = PE_ins.get_Arf();
-    /*
-     * Implement ADD instruction test
-     */
+    let cycles = run_rf_inst(
+        &mut pe,
+        inst::ADD128 {
+            vRD: 3,
+            vRS0: 1,
+            vRS1: 2,
+        },
+    );
+
+    assert_eq!(read_vrf(&mut pe, 3), [9; 8]);
+    assert_eq!(cycles, 2);
 }
 
 #[test]
 fn PE_SUB_test() {
 
+    let mut pe = PE::new();
+    seed_vrf(&mut pe, 1, [10, 20, 30, 40, 50, 60, 70, 80]);
+    seed_vrf(&mut pe, 2, [1, 2, 3, 4, 5, 6, 7, 8]);
+
+    let cycles = run_rf_inst(
+        &mut pe,
+        inst::SUB128 {
+            vRD: 3,
+            vRS0: 1,
+            vRS1: 2,
+        },
+    );
+
+    assert_eq!(read_vrf(&mut pe, 3), [9, 18, 27, 36, 45, 54, 63, 72]);
+    assert_eq!(cycles, 2);
 }
 
 #[test]
 fn PE_MUL_test() {
 
+    let mut pe = PE::new();
+    seed_vrf(&mut pe, 1, [1, 2, 3, 4, 5, 6, 7, 8]);
+    seed_vrf(&mut pe, 2, [8, 7, 6, 5, 4, 3, 2, 1]);
+
+    let cycles = run_rf_inst(
+        &mut pe,
+        inst::MUL128 {
+            vRD: 3,
+            vRS0: 1,
+            vRS1: 2,
+        },
+    );
+
+    assert_eq!(read_vrf(&mut pe, 3), [8, 14, 18, 20, 20, 18, 14, 8]);
+    assert_eq!(cycles, 2);
 }
 
 #[test]
 fn PE_MAC_test() {
 
+    let mut pe = PE::new();
+    seed_srf(&mut pe, 1, 100);
+    seed_vrf(&mut pe, 1, [1, 2, 3, 4, 5, 6, 7, 8]);
+    seed_vrf(&mut pe, 2, [8, 7, 6, 5, 4, 3, 2, 1]);
+
+    let cycles = run_rf_inst(
+        &mut pe,
+        inst::MAC128 {
+            sRD: 2,
+            sRS0: 1,
+            vRS0: 1,
+            vRS1: 2,
+        },
+    );
+
+    assert_eq!(read_srf(&mut pe, 2), 220);
+    assert_eq!(cycles, 2);
 }
 
 #[test]
 fn PE_LD128_test() {
 
+    let mut pe = PE::new();
+    let data = [11, 22, 33, 44, 55, 66, 77, 88];
+    seed_mem_v(&mut pe, 0x100, data);
+
+    let cycles = run_mem_inst_until(
+        &mut pe,
+        inst::LD128 {
+            vRD: 1,
+            addr: 0x100,
+        },
+        |pe| read_vrf(pe, 1) == data,
+    );
+
+    assert_eq!(read_vrf(&mut pe, 1), data);
+    assert!(cycles >= 2);
 }
 
 #[test]
 fn PE_ST128_test() {
 
+    let mut pe = PE::new();
+    let data = [3, 1, 4, 1, 5, 9, 2, 6];
+    seed_vrf(&mut pe, 1, data);
+
+    let cycles = run_mem_inst_until(
+        &mut pe,
+        inst::ST128 {
+            vRS: 1,
+            addr: 0x104,
+        },
+        |pe| read_mem_v(pe, 0x104) == data,
+    );
+
+    assert_eq!(read_mem_v(&mut pe, 0x104), data);
+    assert!(cycles >= 2);
 }
 
 #[test]
 fn PE_LD32_test() {
 
+    let mut pe = PE::new();
+    seed_mem_s(&mut pe, 0x200, 12345);
+
+    let cycles = run_mem_inst_until(
+        &mut pe,
+        inst::LD32 {
+            sRD: 1,
+            addr: 0x200,
+        },
+        |pe| read_srf(pe, 1) == 12345,
+    );
+
+    assert_eq!(read_srf(&mut pe, 1), 12345);
+    assert!(cycles >= 2);
 }
 
 #[test]
 fn PE_ST32_test() {
+    let mut pe = PE::new();
+    seed_srf(&mut pe, 1, -6789);
 
+    let cycles = run_mem_inst_until(
+        &mut pe,
+        inst::ST32 {
+            sRS: 1,
+            addr: 0x204,
+        },
+        |pe| read_mem_s(pe, 0x204) == -6789,
+    );
+
+    assert_eq!(read_mem_s(&mut pe, 0x204), -6789);
+    assert!(cycles >= 2);
 }
+
+#[test]
+fn PE_EX_to_EX_forward_test() {
+    let mut pe = PE::new();
+    seed_vrf(&mut pe, 1, [1, 2, 3, 4, 5, 6, 7, 8]);
+    seed_vrf(&mut pe, 2, [8, 7, 6, 5, 4, 3, 2, 1]);
+    seed_vrf(&mut pe, 5, [10; 8]);
+
+    pe.set_host_inst(inst::ADD128 {
+        vRD: 3,
+        vRS0: 1,
+        vRS1: 2,
+    });
+    pe.tick();
+
+    pe.set_host_inst(inst::ADD128 {
+        vRD: 4,
+        vRS0: 3,
+        vRS1: 5,
+    });
+    pe.tick();
+
+    pe.set_host_inst(inst::NOP);
+    pe.tick();
+
+    assert_eq!(read_vrf(&mut pe, 3), [9; 8]);
+    assert_eq!(read_vrf(&mut pe, 4), [19; 8]);
+}
+
