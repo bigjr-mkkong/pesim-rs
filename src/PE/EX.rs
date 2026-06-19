@@ -194,6 +194,30 @@ impl PE {
     }
 }
 
+/*
+ * TODO
+ * At this point following MEM_stop_FSM will only pause for random amount of cycle
+ * Next step is to "hook" the PE MEM_stop_FSM with dram_portal in src/sim_engine/engine.rs
+ *
+ * engine.rs contain the simulation resources for cpu/PE and dram.
+ *
+ * MEM_stop_FSM for PE is logically identical with MEM_stop_FSM defined inside src/cpu/MEM.rs. In
+ * this case, it's possible for them to share one kinds of stop FSM instead of having different one
+ * for different processing unit.
+ * 
+ * Task #1:
+ * Replace PE exclusive MEM_stop_FSM with the one being used in cpu.
+ *
+ * Comments:
+ * It would be messy if PE is using something from cpu. In this case, create a new folder called
+ * src/common/ which contain shared objects by both CPU and PE. For example, MEM_stop_FSM_states,
+ * MEM_stop_FSM, pipeline_action inside.
+ *
+ * P.S.
+ * PE is directly using MEM_stop_FSM as pipeline_action source. This is fine as we only have one
+ * signal, but it's confusing as there's FSM inside PE. In this case, still use sig_resolver even
+ * there's only one possible signal source
+ */
 #[derive(Clone, Copy)]
 enum MEM_stop_FSM_states {
     Submit,
