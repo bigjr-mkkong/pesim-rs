@@ -497,4 +497,44 @@ mod tests {
 
         assert_eq!(pimcpu.get_RF().read_vregs(4), [777; 4]);
     }
+
+    #[test]
+    fn external_pause_ready_waits_for_configured_delay() {
+        let mut pimcpu = CPU::new();
+        pimcpu.set_external_signal_delays(2, 0);
+
+        pimcpu.signal_pause();
+        assert!(!pimcpu.ready4signal());
+
+        pimcpu.tick();
+        assert!(!pimcpu.ready4signal());
+
+        pimcpu.tick();
+        assert!(!pimcpu.ready4signal());
+
+        pimcpu.tick();
+        assert!(pimcpu.ready4signal());
+    }
+
+    #[test]
+    fn external_resume_ready_waits_for_configured_delay() {
+        let mut pimcpu = CPU::new();
+        pimcpu.set_external_signal_delays(0, 2);
+
+        pimcpu.signal_pause();
+        pimcpu.tick();
+        assert!(pimcpu.ready4signal());
+
+        pimcpu.signal_resume();
+        assert!(!pimcpu.ready4signal());
+
+        pimcpu.tick();
+        assert!(!pimcpu.ready4signal());
+
+        pimcpu.tick();
+        assert!(!pimcpu.ready4signal());
+
+        pimcpu.tick();
+        assert!(pimcpu.ready4signal());
+    }
 }

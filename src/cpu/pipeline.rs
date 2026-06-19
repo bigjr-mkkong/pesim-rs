@@ -33,6 +33,10 @@ pub struct CPU {
     pub(crate) fmem: cpu_flat_mem,
     ext_pause_requested: bool,
     ready4ext_sig: bool,
+    pause_ready_delay_cycles: u64,
+    resume_ready_delay_cycles: u64,
+    ext_signal_delay_remaining: u64,
+    pause_ready_delay_started: bool,
 }
 
 impl CPU {
@@ -65,6 +69,10 @@ impl CPU {
             fmem: cpu_flat_mem::new(),
             ext_pause_requested: false,
             ready4ext_sig: true,
+            pause_ready_delay_cycles: 0,
+            resume_ready_delay_cycles: 0,
+            ext_signal_delay_remaining: 0,
+            pause_ready_delay_started: false,
         }
     }
 
@@ -94,20 +102,57 @@ impl CPU {
 
     pub fn signal_pause(&mut self) {
         self.ext_pause_requested = true;
-        self.ready4ext_sig = !self
-            .pipeline_ctrl
-            .has_active_signal(signal_reason::mem_block_kind());
+        self.ready4ext_sig = false;
+        self.pause_ready_delay_started = false;
+        self.ext_signal_delay_remaining = 0;
     }
 
     pub fn signal_resume(&mut self) {
         self.ext_pause_requested = false;
-        self.ready4ext_sig = true;
+        self.pause_ready_delay_started = false;
+        self.ext_signal_delay_remaining = self.resume_ready_delay_cycles;
+        self.ready4ext_sig = self.resume_ready_delay_cycles == 0;
         self.pipeline_ctrl
             .clear_active_signal(signal_reason::external_pause);
     }
 
+    // This function will let engine to set fast-switch parameter or regular PREC+ACT
+    pub fn set_external_signal_delays(&mut self, pause_cycles: u64, resume_cycles: u64) {
+        self.pause_ready_delay_cycles = pause_cycles;
+        self.resume_ready_delay_cycles = resume_cycles;
+    }
+
     pub fn ready4signal(&self) -> bool {
         self.ready4ext_sig
+    }
+
+    fn update_extsig_rdy(&mut self, winner_reason: Option<signal_reason>) {
+        if self.ext_signal_delay_remaining > 0 {
+            self.ext_signal_delay_remaining -= 1;
+            self.ready4ext_sig = false;
+            return;
+        }
+
+        if self.ext_pause_requested {
+            if !self.pause_ready_delay_started {
+                if winner_reason == Some(signal_reason::external_pause) {
+                    self.pause_ready_delay_started = true;
+                    self.ext_signal_delay_remaining = self.pause_ready_delay_cycles;
+                } else {
+                    self.ready4ext_sig = false;
+                    return;
+                }
+            }
+
+            if self.ext_signal_delay_remaining > 0 {
+                self.ext_signal_delay_remaining -= 1;
+                self.ready4ext_sig = false;
+            } else {
+                self.ready4ext_sig = true;
+            }
+        } else {
+            self.ready4ext_sig = true;
+        }
     }
 
     fn maybe_pause_stage_result(
@@ -163,11 +208,10 @@ impl CPU {
         let pipeline_op = self.pipeline_ctrl.get_decision();
         let winner_reason = self.pipeline_ctrl.last_winner_reason();
 
-        if self.ext_pause_requested {
-            self.ready4ext_sig = winner_reason == Some(signal_reason::external_pause);
-        } else {
-            self.ready4ext_sig = true;
-        }
+        // This function will update self.ready4sig() according to defined delay cycle
+        // It introduced a fixed cycle delay after MEM has finished.
+        // This is to simulate the PREC+ACT delay when switch between PIM and MEM
+        self.update_extsig_rdy(winner_reason);
 
         let stage_action = |stage| {
             pipeline_op

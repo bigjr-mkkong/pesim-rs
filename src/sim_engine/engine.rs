@@ -56,7 +56,13 @@ pub enum EngineSchedulingMode {
  *
  * Task #3: Modify Engine new_* functions according to above name changing
  *
- * Task #4:
+ * Task #4: Add a switch-delay simulation similiar to CPU::update_extsig_rdy().
+ * - In fact they are the same. The reason the switch-delay simulation exists in engine level
+ * instead of PE level is PE is request-wise processor and does not contain stale state when
+ * PE::has_finished() return true. In this case, the switch-delay logic can exists in engine level.
+ *
+ * Task #5: Add new branch inside tick() for PE ticking. The scheduler for PE can left as
+ * round-robin(PIM then MEM then PIM ...)
  */
 
 pub struct Engine {
@@ -145,6 +151,11 @@ impl Engine {
 
     pub fn get_dram_port(&mut self) -> &mut dram_portal {
         &mut self.dram_port
+    }
+
+    pub fn set_external_signal_delays(&mut self, pause_cycles: u64, resume_cycles: u64) {
+        self.sim_cpu
+            .set_external_signal_delays(pause_cycles, resume_cycles);
     }
 
     /*
