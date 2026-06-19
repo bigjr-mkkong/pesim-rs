@@ -15,7 +15,7 @@ use std::collections::HashSet;
 pub struct PE {
     host_inst: inst,
     issue_ex_rf: ISSUE_EX_RF,
-    ex_wb_forward_rf: EX_WB_RF,
+    pub(crate) ex_wb_forward_rf: EX_WB_RF,
     Arf: arch_rf,
     fmem: flat_mem,
     mem_stop_fsm: MEM_stop_FSM,
@@ -114,4 +114,50 @@ impl PE {
             }
         }
     }
+}
+
+#[test]
+fn PE_ADD_test() {
+
+    let mut PE_ins = PE::new();
+    let mut mem = PE_ins.get_fmem();
+    let mut arf = PE_ins.get_Arf();
+    /*
+     * Implement ADD instruction test
+     */
+}
+
+#[test]
+fn PE_SUB_test() {
+
+}
+
+#[test]
+fn PE_MUL_test() {
+
+}
+
+#[test]
+fn PE_MAC_test() {
+
+}
+
+#[test]
+fn PE_LD128_test() {
+
+}
+
+#[test]
+fn PE_ST128_test() {
+
+}
+
+#[test]
+fn PE_LD32_test() {
+
+}
+
+#[test]
+fn PE_ST32_test() {
+
 }

@@ -16,6 +16,7 @@ macro_rules! rfid_chk {
 const vRF_max: usize = 16;
 const sRF_max: usize = 8;
 
+#[derive(Clone, Copy)]
 pub struct arch_rf {
     vRF: [[i16; 8]; vRF_max],
     sRF: [i32; sRF_max],
