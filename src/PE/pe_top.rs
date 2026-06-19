@@ -4,12 +4,13 @@
  *
  */
 
-use crate::PE::EX::{EX_WB_RF, MEM_stop_FSM};
+use crate::PE::EX::{EX_WB_RF, PE_MEM_stop_FSM};
 use crate::PE::ISSUE::ISSUE_EX_RF;
 use crate::PE::RF::arch_rf;
 use crate::PE::types::{PE_stages, arch_action, inst};
 use crate::cpu::signal_scoreboard::pipeline_action;
 use crate::memory::flat_memory::pe_flat_mem;
+use crate::memory::mem_portal::dram_portal;
 use std::collections::HashSet;
 
 pub struct PE {
@@ -18,7 +19,7 @@ pub struct PE {
     pub(crate) ex_wb_forward_rf: EX_WB_RF,
     Arf: arch_rf,
     fmem: pe_flat_mem,
-    mem_stop_fsm: MEM_stop_FSM,
+    mem_stop_fsm: PE_MEM_stop_FSM,
 }
 
 impl PE {
@@ -29,7 +30,18 @@ impl PE {
             ex_wb_forward_rf: EX_WB_RF::new(),
             Arf: arch_rf::new(),
             fmem: pe_flat_mem::new(),
-            mem_stop_fsm: MEM_stop_FSM::new(),
+            mem_stop_fsm: PE_MEM_stop_FSM::new(),
+        }
+    }
+
+    pub fn new_with_dram_port(dram_port: dram_portal) -> Self {
+        Self {
+            host_inst: inst::NOP,
+            issue_ex_rf: ISSUE_EX_RF::new(),
+            ex_wb_forward_rf: EX_WB_RF::new(),
+            Arf: arch_rf::new(),
+            fmem: pe_flat_mem::new(),
+            mem_stop_fsm: PE_MEM_stop_FSM::new_with_dram_port(dram_port),
         }
     }
 
@@ -192,7 +204,6 @@ fn PE_ADD_test() {
 
 #[test]
 fn PE_SUB_test() {
-
     let mut pe = PE::new();
     seed_vrf(&mut pe, 1, [10, 20, 30, 40, 50, 60, 70, 80]);
     seed_vrf(&mut pe, 2, [1, 2, 3, 4, 5, 6, 7, 8]);
@@ -212,7 +223,6 @@ fn PE_SUB_test() {
 
 #[test]
 fn PE_MUL_test() {
-
     let mut pe = PE::new();
     seed_vrf(&mut pe, 1, [1, 2, 3, 4, 5, 6, 7, 8]);
     seed_vrf(&mut pe, 2, [8, 7, 6, 5, 4, 3, 2, 1]);
@@ -232,7 +242,6 @@ fn PE_MUL_test() {
 
 #[test]
 fn PE_MAC_test() {
-
     let mut pe = PE::new();
     seed_srf(&mut pe, 1, 100);
     seed_vrf(&mut pe, 1, [1, 2, 3, 4, 5, 6, 7, 8]);
@@ -254,7 +263,6 @@ fn PE_MAC_test() {
 
 #[test]
 fn PE_LD128_test() {
-
     let mut pe = PE::new();
     let data = [11, 22, 33, 44, 55, 66, 77, 88];
     seed_mem_v(&mut pe, 0x100, data);
@@ -274,7 +282,6 @@ fn PE_LD128_test() {
 
 #[test]
 fn PE_ST128_test() {
-
     let mut pe = PE::new();
     let data = [3, 1, 4, 1, 5, 9, 2, 6];
     seed_vrf(&mut pe, 1, data);
@@ -294,7 +301,6 @@ fn PE_ST128_test() {
 
 #[test]
 fn PE_LD32_test() {
-
     let mut pe = PE::new();
     seed_mem_s(&mut pe, 0x200, 12345);
 
@@ -356,4 +362,3 @@ fn PE_EX_to_EX_forward_test() {
     assert_eq!(read_vrf(&mut pe, 3), [9; 8]);
     assert_eq!(read_vrf(&mut pe, 4), [19; 8]);
 }
-

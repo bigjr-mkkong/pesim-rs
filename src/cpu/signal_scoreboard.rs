@@ -279,6 +279,35 @@ impl sig_resolver {
     }
 }
 
+/*
+ * TODO: Quick-Pausing simulation
+ * Pausing simulation are being implemented in two parts:
+ * Parts 1: DRAMSim3:
+ *  - DRAMSim3 already contain delay code which simulate the delay caused by quick-pausing circuit.
+ *  This has been done by introduce a fixed delay over regular row buffer miss
+ * Parts 2: pause/resume FSM
+ *  - ExternalPause_FSM
+ *  - This part haven't been done yet. Ideally ExternalPause_FSM should exists for several cycles
+ *  and block engine from sending host request as it's still in the middle of "pausing". For now
+ *  pause happened immediately after next cycle and only wait MEM_stop_FSM finished. Adding more
+ *  stages to simulate a regular pause (PREC+ACT) and quick-pausing(PREC+ACT but faster) here is
+ *  necessary
+ *
+ * Part 1 has been done, but part 2 is left as stub. The way to "hold" engine from pushing host
+ * request is by delay self.ready4ext_sig for a bit longer. For now ready4ext_sig become true
+ * immediately when ExternalPause_FSM wins. I am looking for:
+ *
+ * 1. Still immediately pause pipeline when ExternalPause_FSM wins
+ * 2. Instead update self.ready4ext_sig immediately, having a mechanism to hold this variable from
+ *    change in configurable cycles
+ *
+ * I prefer introducing as small amount of code as possible, and keep interface exposed to engine
+ * the same
+ *
+ * Ensure the pause/resume related timing are configurable from engine.
+ *
+ * Above description mainly focused on pause, but resume should also be the same
+ */
 #[derive(Clone, Copy)]
 pub struct ExternalPause_FSM;
 

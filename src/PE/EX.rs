@@ -10,6 +10,7 @@ use crate::PE::pe_top::PE;
 use crate::PE::types::{ALUop, MEMop, PE_stages, WBop, arch_action};
 use crate::cpu::signal_scoreboard::{pipeline_action, signal_reason};
 use crate::memory::flat_memory::pe_flat_mem;
+use crate::memory::mem_portal::{dram_portal, dram_req, portal_req};
 use std::collections::HashMap;
 
 #[derive(Clone, Copy)]
@@ -194,32 +195,8 @@ impl PE {
     }
 }
 
-/*
- * TODO
- * At this point following MEM_stop_FSM will only pause for random amount of cycle
- * Next step is to "hook" the PE MEM_stop_FSM with dram_portal in src/sim_engine/engine.rs
- *
- * engine.rs contain the simulation resources for cpu/PE and dram.
- *
- * MEM_stop_FSM for PE is logically identical with MEM_stop_FSM defined inside src/cpu/MEM.rs. In
- * this case, it's possible for them to share one kinds of stop FSM instead of having different one
- * for different processing unit.
- * 
- * Task #1:
- * Replace PE exclusive MEM_stop_FSM with the one being used in cpu.
- *
- * Comments:
- * It would be messy if PE is using something from cpu. In this case, create a new folder called
- * src/common/ which contain shared objects by both CPU and PE. For example, MEM_stop_FSM_states,
- * MEM_stop_FSM, pipeline_action inside.
- *
- * P.S.
- * PE is directly using MEM_stop_FSM as pipeline_action source. This is fine as we only have one
- * signal, but it's confusing as there's FSM inside PE. In this case, still use sig_resolver even
- * there's only one possible signal source
- */
 #[derive(Clone, Copy)]
-enum MEM_stop_FSM_states {
+enum PE_MEM_stop_FSM_states {
     Submit,
     Stall,
     WriteBack,
@@ -227,15 +204,30 @@ enum MEM_stop_FSM_states {
     Idle,
 }
 
-pub struct MEM_stop_FSM {
-    state: MEM_stop_FSM_states,
-    // Should also contain a dram_port copy for issue
+#[derive(Clone)]
+pub struct PE_MEM_stop_FSM {
+    state: PE_MEM_stop_FSM_states,
+    state_next: PE_MEM_stop_FSM_states,
+    req: Option<dram_req>,
+    dram_port: Option<dram_portal>,
 }
 
-impl MEM_stop_FSM {
-    pub fn new() -> Self {
+impl PE_MEM_stop_FSM {
+    pub const fn new() -> Self {
         Self {
-            state: MEM_stop_FSM_states::Idle,
+            state: PE_MEM_stop_FSM_states::Idle,
+            state_next: PE_MEM_stop_FSM_states::Idle,
+            req: None,
+            dram_port: None,
+        }
+    }
+
+    pub fn new_with_dram_port(dram_port: dram_portal) -> Self {
+        Self {
+            state: PE_MEM_stop_FSM_states::Idle,
+            state_next: PE_MEM_stop_FSM_states::Idle,
+            req: None,
+            dram_port: Some(dram_port),
         }
     }
 
@@ -243,47 +235,69 @@ impl MEM_stop_FSM {
         &mut self,
         sig_reason: signal_reason,
     ) -> HashMap<PE_stages, pipeline_action> {
-        if self.is_idle() && matches!(sig_reason, signal_reason::MEM_block { .. }) {
-            self.state = MEM_stop_FSM_states::Submit;
+        if self.is_idle() {
+            if matches!(sig_reason, signal_reason::MEM_block { .. }) {
+                self.state = PE_MEM_stop_FSM_states::Submit;
+            } else {
+                return HashMap::new();
+            }
         }
 
         let ops = self.get_ops();
-        self.advance();
+        self.advance(sig_reason);
         ops
     }
 
     fn is_idle(&self) -> bool {
-        matches!(self.state, MEM_stop_FSM_states::Idle)
+        matches!(self.state, PE_MEM_stop_FSM_states::Idle)
     }
 
     fn get_ops(&self) -> HashMap<PE_stages, pipeline_action> {
         match self.state {
-            MEM_stop_FSM_states::Submit | MEM_stop_FSM_states::Stall => HashMap::from([
+            PE_MEM_stop_FSM_states::Submit | PE_MEM_stop_FSM_states::Stall => HashMap::from([
                 (PE_stages::ISSUE, pipeline_action::Stall),
                 (PE_stages::EX, pipeline_action::Stall),
             ]),
-            MEM_stop_FSM_states::WriteBack => {
+            PE_MEM_stop_FSM_states::WriteBack | PE_MEM_stop_FSM_states::Release => {
                 HashMap::from([(PE_stages::ISSUE, pipeline_action::Stall)])
             }
-            MEM_stop_FSM_states::Release => {
-                HashMap::from([(PE_stages::ISSUE, pipeline_action::Stall)])
-            }
-            MEM_stop_FSM_states::Idle => HashMap::new(),
+            PE_MEM_stop_FSM_states::Idle => HashMap::new(),
         }
     }
 
-    fn advance(&mut self) {
-        self.state = match self.state {
-            MEM_stop_FSM_states::Submit | MEM_stop_FSM_states::Stall => {
-                if rand::random_bool(0.7) {
-                    MEM_stop_FSM_states::Stall
+    fn advance(&mut self, sig_reason: signal_reason) {
+        self.state_next = match self.state {
+            PE_MEM_stop_FSM_states::Submit => {
+                if let signal_reason::MEM_block { addr, is_read } = sig_reason {
+                    let req = dram_req::new(addr, is_read, true);
+                    self.req = Some(req.clone());
+
+                    if let Some(dram_port) = &mut self.dram_port {
+                        dram_port.submit(portal_req::PIM_REQ { req });
+                        PE_MEM_stop_FSM_states::Stall
+                    } else {
+                        PE_MEM_stop_FSM_states::WriteBack
+                    }
                 } else {
-                    MEM_stop_FSM_states::WriteBack
+                    PE_MEM_stop_FSM_states::WriteBack
                 }
             }
-            MEM_stop_FSM_states::WriteBack => MEM_stop_FSM_states::Release,
-            MEM_stop_FSM_states::Release => MEM_stop_FSM_states::Idle,
-            MEM_stop_FSM_states::Idle => MEM_stop_FSM_states::Idle,
+            PE_MEM_stop_FSM_states::Stall => {
+                if let (Some(req), Some(dram_port)) = (&self.req, &mut self.dram_port) {
+                    if dram_port.take_completed(req).is_some() {
+                        PE_MEM_stop_FSM_states::WriteBack
+                    } else {
+                        PE_MEM_stop_FSM_states::Stall
+                    }
+                } else {
+                    PE_MEM_stop_FSM_states::WriteBack
+                }
+            }
+            PE_MEM_stop_FSM_states::WriteBack => PE_MEM_stop_FSM_states::Release,
+            PE_MEM_stop_FSM_states::Release => PE_MEM_stop_FSM_states::Idle,
+            PE_MEM_stop_FSM_states::Idle => PE_MEM_stop_FSM_states::Idle,
         };
+
+        self.state = self.state_next;
     }
 }

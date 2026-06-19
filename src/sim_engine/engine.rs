@@ -20,6 +20,45 @@ pub enum EngineSchedulingMode {
     HostOnly,
 }
 
+/*
+ * TODO
+ * Add sim_pe: PE into this engine
+ * PE behave different with CPU. CPU will autonomously running and buffer all user request when it's
+ * running. But PE works under the assumption that no request will arrive when it's executing.
+ *
+ * In this case, although host_pool still act like a secondary source of dram_req goes into
+ * dram_port, but the scheduler behave differently.
+ *
+ * PE_scheduler will basically be a F3FS scheduler. Instead of being a cycle-level
+ * scheduler,
+ * it's more like a request level scheduler. It will finish one request either from PE or host_pool,
+ * and determine which one will have the right to issue next request.
+ *
+ * In this case, there are two things need to be done in PE side:
+ *
+ * Task #1: Implement PE imem buffer which buffer host issued command. PE also need
+ * engine::PE_schedule() to permitte it to get the next instruction so also implement allow_next().
+ * allow_next will be a setter of a flag inside PE so the fetching logic can fetch imem.next(),
+ * otherwise fetchin logic will only fill pipeline with NOP. fetching logic will reset the flag
+ * until next time scheduler tell it to start
+ *
+ * Task #2: PE also need to implement a function called has_finished() which return if on-going
+ * request has been done. This can be implemented by another internal flag. this flag will be set by
+ * any non-NOP command flows into ex-bypass stage register, and after has_finished() being called,
+ * it will reset the flag.
+ *
+ * After finished above TODO's
+ * Task #1: De-couple mechanism-wise and scheduler algorithm state update from switch()
+ *      #1 explain: tick counter(for example, PIM_tick_watermark) are policy-wise variable, which
+ *      suppose to be updated by scheduler instead of switch(), move them out of switch
+ * Task #2: Rename EngineSchedulingMode::ScheduledHostPim into Host_CGO_share, Rename
+ * EngineSchedulingMode::PimOnly into CGO_only, and add Host_FGO_share type.
+ *
+ * Task #3: Modify Engine new_* functions according to above name changing
+ *
+ * Task #4:
+ */
+
 pub struct Engine {
     sim_cpu: CPU,
     host_pool: Vec<portal_req>,
