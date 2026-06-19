@@ -11,10 +11,12 @@ use crate::PE::types::{PE_stages, arch_action, inst};
 use crate::cpu::signal_scoreboard::pipeline_action;
 use crate::memory::flat_memory::pe_flat_mem;
 use crate::memory::mem_portal::dram_portal;
-use std::collections::HashSet;
+use std::collections::{HashSet, VecDeque};
 
 pub struct PE {
-    host_inst: inst,
+    imem: VecDeque<inst>,
+    fetch_next_allowed: bool,
+    finished: bool,
     issue_ex_rf: ISSUE_EX_RF,
     pub(crate) ex_wb_forward_rf: EX_WB_RF,
     Arf: arch_rf,
@@ -25,7 +27,9 @@ pub struct PE {
 impl PE {
     pub fn new() -> Self {
         Self {
-            host_inst: inst::NOP,
+            imem: VecDeque::new(),
+            fetch_next_allowed: false,
+            finished: false,
             issue_ex_rf: ISSUE_EX_RF::new(),
             ex_wb_forward_rf: EX_WB_RF::new(),
             Arf: arch_rf::new(),
@@ -36,7 +40,9 @@ impl PE {
 
     pub fn new_with_dram_port(dram_port: dram_portal) -> Self {
         Self {
-            host_inst: inst::NOP,
+            imem: VecDeque::new(),
+            fetch_next_allowed: false,
+            finished: false,
             issue_ex_rf: ISSUE_EX_RF::new(),
             ex_wb_forward_rf: EX_WB_RF::new(),
             Arf: arch_rf::new(),
@@ -45,8 +51,33 @@ impl PE {
         }
     }
 
+    pub fn push_host_inst(&mut self, host_inst: inst) {
+        if !matches!(host_inst, inst::NOP) {
+            self.imem.push_back(host_inst);
+        }
+    }
+
     pub fn set_host_inst(&mut self, host_inst: inst) {
-        self.host_inst = host_inst;
+        self.push_host_inst(host_inst);
+    }
+
+    pub fn allow_next(&mut self) {
+        self.fetch_next_allowed = true;
+    }
+
+    pub fn has_finished(&mut self) -> bool {
+        let finished = self.finished;
+        self.finished = false;
+        finished
+    }
+
+    fn fetch_inst(&mut self) -> inst {
+        if self.fetch_next_allowed {
+            self.fetch_next_allowed = false;
+            self.imem.pop_front().unwrap_or(inst::NOP)
+        } else {
+            inst::NOP
+        }
     }
 
     pub fn get_Arf(&mut self) -> &mut arch_rf {
@@ -60,7 +91,6 @@ impl PE {
     pub fn tick(&mut self) {
         let issue_ex_snapshot = self.issue_ex_rf;
         let (ex_wb_next, ex_sigreq, ex_archop) = self.eval_EX(&issue_ex_snapshot, &self.fmem);
-        let issue_ex_next = Self::eval_ISSUE(self.host_inst, &self.Arf);
 
         let pipeline_op = self.mem_stop_fsm.get_decision(ex_sigreq);
         let stage_action = |stage| {
@@ -71,7 +101,11 @@ impl PE {
         };
 
         if stage_action(PE_stages::EX) == pipeline_action::Normal {
+            let completed_arch_update = ex_archop.iter().any(|op| op.dest().is_some());
             self.arch_update(ex_archop);
+            if completed_arch_update {
+                self.finished = true;
+            }
         }
 
         if stage_action(PE_stages::EX) == pipeline_action::Normal && ex_wb_next.is_valid() {
@@ -87,7 +121,10 @@ impl PE {
         };
 
         match stage_op(stage_action(PE_stages::ISSUE), stage_action(PE_stages::EX)) {
-            pipeline_action::Normal => self.issue_ex_rf = issue_ex_next,
+            pipeline_action::Normal => {
+                let issue_inst = self.fetch_inst();
+                self.issue_ex_rf = Self::eval_ISSUE(issue_inst, &self.Arf);
+            }
             pipeline_action::Stall => {}
             pipeline_action::Flush | pipeline_action::END => self.issue_ex_rf = ISSUE_EX_RF::new(),
         }
@@ -161,17 +198,17 @@ fn read_mem_s(pe: &mut PE, addr: u32) -> i32 {
 }
 
 fn run_rf_inst(pe: &mut PE, instruction: inst) -> usize {
-    pe.set_host_inst(instruction);
+    pe.push_host_inst(instruction);
+    pe.allow_next();
     pe.tick();
-    pe.set_host_inst(inst::NOP);
     pe.tick();
     2
 }
 
 fn run_mem_inst_until(pe: &mut PE, instruction: inst, complete: impl Fn(&mut PE) -> bool) -> usize {
-    pe.set_host_inst(instruction);
+    pe.push_host_inst(instruction);
+    pe.allow_next();
     pe.tick();
-    pe.set_host_inst(inst::NOP);
 
     for cycles in 2..=128 {
         pe.tick();
@@ -342,23 +379,127 @@ fn PE_EX_to_EX_forward_test() {
     seed_vrf(&mut pe, 2, [8, 7, 6, 5, 4, 3, 2, 1]);
     seed_vrf(&mut pe, 5, [10; 8]);
 
-    pe.set_host_inst(inst::ADD128 {
+    pe.push_host_inst(inst::ADD128 {
         vRD: 3,
         vRS0: 1,
         vRS1: 2,
     });
-    pe.tick();
-
-    pe.set_host_inst(inst::ADD128 {
+    pe.push_host_inst(inst::ADD128 {
         vRD: 4,
         vRS0: 3,
         vRS1: 5,
     });
-    pe.tick();
 
-    pe.set_host_inst(inst::NOP);
+    pe.allow_next();
+    pe.tick();
+    pe.allow_next();
+    pe.tick();
     pe.tick();
 
     assert_eq!(read_vrf(&mut pe, 3), [9; 8]);
     assert_eq!(read_vrf(&mut pe, 4), [19; 8]);
+}
+
+#[test]
+fn PE_imem_waits_for_allow_next_test() {
+    let mut pe = PE::new();
+    seed_vrf(&mut pe, 1, [1; 8]);
+    seed_vrf(&mut pe, 2, [2; 8]);
+
+    pe.push_host_inst(inst::ADD128 {
+        vRD: 3,
+        vRS0: 1,
+        vRS1: 2,
+    });
+
+    pe.tick();
+    pe.tick();
+
+    assert_eq!(read_vrf(&mut pe, 3), [0; 8]);
+    assert!(!pe.has_finished());
+
+    pe.allow_next();
+    pe.tick();
+    pe.tick();
+
+    assert_eq!(read_vrf(&mut pe, 3), [3; 8]);
+    assert!(pe.has_finished());
+    assert!(!pe.has_finished());
+}
+
+#[test]
+fn PE_allow_next_fetches_one_buffered_instruction_test() {
+    let mut pe = PE::new();
+    seed_vrf(&mut pe, 1, [4; 8]);
+    seed_vrf(&mut pe, 2, [5; 8]);
+    seed_vrf(&mut pe, 4, [20; 8]);
+    seed_vrf(&mut pe, 5, [3; 8]);
+
+    pe.push_host_inst(inst::ADD128 {
+        vRD: 3,
+        vRS0: 1,
+        vRS1: 2,
+    });
+    pe.push_host_inst(inst::SUB128 {
+        vRD: 6,
+        vRS0: 4,
+        vRS1: 5,
+    });
+
+    pe.allow_next();
+    pe.tick();
+    pe.tick();
+
+    assert_eq!(read_vrf(&mut pe, 3), [9; 8]);
+    assert_eq!(read_vrf(&mut pe, 6), [0; 8]);
+    assert!(pe.has_finished());
+
+    pe.tick();
+    assert_eq!(read_vrf(&mut pe, 6), [0; 8]);
+    assert!(!pe.has_finished());
+
+    pe.allow_next();
+    pe.tick();
+    pe.tick();
+
+    assert_eq!(read_vrf(&mut pe, 6), [17; 8]);
+    assert!(pe.has_finished());
+}
+
+#[test]
+fn PE_has_finished_tracks_memory_arch_update_test() {
+    let mut pe = PE::new();
+    seed_mem_s(&mut pe, 0x300, 2468);
+
+    pe.push_host_inst(inst::LD32 {
+        sRD: 7,
+        addr: 0x300,
+    });
+    pe.allow_next();
+    pe.tick();
+
+    assert!(!pe.has_finished());
+
+    for _ in 0..128 {
+        pe.tick();
+        if read_srf(&mut pe, 7) == 2468 {
+            assert!(pe.has_finished());
+            assert!(!pe.has_finished());
+            return;
+        }
+    }
+
+    panic!("memory instruction did not complete within 128 cycles");
+}
+
+#[test]
+fn PE_nop_does_not_finish_test() {
+    let mut pe = PE::new();
+
+    pe.set_host_inst(inst::NOP);
+    pe.allow_next();
+    pe.tick();
+    pe.tick();
+
+    assert!(!pe.has_finished());
 }

@@ -36,18 +36,10 @@ pub enum EngineSchedulingMode {
  *
  * In this case, there are two things need to be done in PE side:
  *
- * Task #1: Implement PE imem buffer which buffer host issued command. PE also need
- * engine::PE_schedule() to permitte it to get the next instruction so also implement allow_next().
- * allow_next will be a setter of a flag inside PE so the fetching logic can fetch imem.next(),
- * otherwise fetchin logic will only fill pipeline with NOP. fetching logic will reset the flag
- * until next time scheduler tell it to start
+ * Done in PE: implemented an imem buffer for host-issued commands, allow_next(), and
+ * completion-based has_finished() for architectural updates / DRAM operation completion.
  *
- * Task #2: PE also need to implement a function called has_finished() which return if on-going
- * request has been done. This can be implemented by another internal flag. this flag will be set by
- * any non-NOP command flows into ex-bypass stage register, and after has_finished() being called,
- * it will reset the flag.
- *
- * After finished above TODO's
+ * Remaining TODOs:
  * Task #1: De-couple mechanism-wise and scheduler algorithm state update from switch()
  *      #1 explain: tick counter(for example, PIM_tick_watermark) are policy-wise variable, which
  *      suppose to be updated by scheduler instead of switch(), move them out of switch
@@ -56,13 +48,18 @@ pub enum EngineSchedulingMode {
  *
  * Task #3: Modify Engine new_* functions according to above name changing
  *
- * Task #4: Add a switch-delay simulation similiar to CPU::update_extsig_rdy().
+ * Task #4: Add a switch-delay simulation similiar to CPU::update_extsig_rdy() for PE switch() when
+ * simulator running under Host_FGO_share mode
  * - In fact they are the same. The reason the switch-delay simulation exists in engine level
  * instead of PE level is PE is request-wise processor and does not contain stale state when
  * PE::has_finished() return true. In this case, the switch-delay logic can exists in engine level.
  *
  * Task #5: Add new branch inside tick() for PE ticking. The scheduler for PE can left as
  * round-robin(PIM then MEM then PIM ...)
+ *
+ * Current design of scheduler algorithm completly sitting inside struct Engine. Although this is not a good
+ * practice, design more complex abstraction layer for scheduler would also be over-killed. In this
+ * case, stick with current all-in-one scheduler internal state keep is fine
  */
 
 pub struct Engine {
