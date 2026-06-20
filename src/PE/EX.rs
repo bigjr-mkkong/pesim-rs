@@ -58,6 +58,14 @@ impl PE {
         issue_ex_rf: &ISSUE_EX_RF,
         fmem: &pe_flat_mem,
     ) -> (EX_WB_RF, signal_reason, Vec<arch_action>) {
+        if !issue_ex_rf.is_valid() {
+            return (
+                EX_WB_RF::new(),
+                signal_reason::no_reason,
+                vec![arch_action::DoNothing],
+            );
+        }
+
         let bypassed_aluop = self.ex_bypass_aluop(issue_ex_rf.get_aluop());
         let mut ex_wb_next = EX_WB_RF {
             valid: true,

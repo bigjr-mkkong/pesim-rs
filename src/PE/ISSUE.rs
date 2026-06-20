@@ -1,9 +1,13 @@
 use crate::PE::RF::arch_rf;
 use crate::PE::pe_top::PE;
 use crate::PE::types::{ALUop, MEMop, WBop, inst};
+use crate::memory::mem_portal::dram_req;
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub struct ISSUE_EX_RF {
+    valid: bool,
+    // Simulator-only request metadata; this is not a field in the PE architecture.
+    sim_req: Option<dram_req>,
     aluop: ALUop,
     memop: MEMop,
     wbop: WBop,
@@ -12,10 +16,20 @@ pub struct ISSUE_EX_RF {
 impl ISSUE_EX_RF {
     pub const fn new() -> Self {
         Self {
+            valid: false,
+            sim_req: None,
             aluop: ALUop::NOP,
             memop: MEMop::NOP,
             wbop: WBop::NOP,
         }
+    }
+
+    pub fn is_valid(&self) -> bool {
+        self.valid
+    }
+
+    pub fn get_sim_req(&self) -> Option<dram_req> {
+        self.sim_req.clone()
     }
 
     pub fn get_aluop(&self) -> ALUop {
@@ -32,14 +46,22 @@ impl ISSUE_EX_RF {
 }
 
 impl PE {
-    pub fn eval_ISSUE(read_inst: inst, arf: &arch_rf) -> ISSUE_EX_RF {
+    pub fn eval_ISSUE(input: Option<(inst, Option<dram_req>)>, arf: &arch_rf) -> ISSUE_EX_RF {
+        let Some((read_inst, sim_req)) = input else {
+            return ISSUE_EX_RF::new();
+        };
+
         match read_inst {
             inst::NOP => ISSUE_EX_RF {
+                valid: true,
+                sim_req,
                 aluop: ALUop::NOP,
                 memop: MEMop::NOP,
                 wbop: WBop::NOP,
             },
             inst::LD128 { vRD, addr } => ISSUE_EX_RF {
+                valid: true,
+                sim_req,
                 aluop: ALUop::NOP,
                 memop: MEMop::ReadV { addr: addr },
                 wbop: WBop::VWrite { vRD: vRD },
@@ -47,6 +69,8 @@ impl PE {
             inst::ST128 { vRS, addr } => {
                 let data = arf.read_vRF(vRS);
                 ISSUE_EX_RF {
+                    valid: true,
+                    sim_req,
                     aluop: ALUop::NOP,
                     memop: MEMop::WriteV {
                         addr,
@@ -57,6 +81,8 @@ impl PE {
                 }
             }
             inst::LD32 { sRD, addr } => ISSUE_EX_RF {
+                valid: true,
+                sim_req,
                 aluop: ALUop::NOP,
                 memop: MEMop::ReadS { addr: addr },
                 wbop: WBop::SWrite { sRD: sRD },
@@ -64,6 +90,8 @@ impl PE {
             inst::ST32 { sRS, addr } => {
                 let data = arf.read_sRF(sRS);
                 ISSUE_EX_RF {
+                    valid: true,
+                    sim_req,
                     aluop: ALUop::NOP,
                     memop: MEMop::WriteS {
                         addr,
@@ -77,6 +105,8 @@ impl PE {
                 let rs0_lit = arf.read_vRF(vRS0);
                 let rs1_lit = arf.read_vRF(vRS1);
                 ISSUE_EX_RF {
+                    valid: true,
+                    sim_req,
                     aluop: ALUop::ADD {
                         vRS0,
                         vRS1,
@@ -91,6 +121,8 @@ impl PE {
                 let rs0_lit = arf.read_vRF(vRS0);
                 let rs1_lit = arf.read_vRF(vRS1);
                 ISSUE_EX_RF {
+                    valid: true,
+                    sim_req,
                     aluop: ALUop::SUB {
                         vRS0,
                         vRS1,
@@ -105,6 +137,8 @@ impl PE {
                 let rs0_lit = arf.read_vRF(vRS0);
                 let rs1_lit = arf.read_vRF(vRS1);
                 ISSUE_EX_RF {
+                    valid: true,
+                    sim_req,
                     aluop: ALUop::MUL {
                         vRS0,
                         vRS1,
@@ -125,6 +159,8 @@ impl PE {
                 let vrs0_lit = arf.read_vRF(vRS0);
                 let vrs1_lit = arf.read_vRF(vRS1);
                 ISSUE_EX_RF {
+                    valid: true,
+                    sim_req,
                     aluop: ALUop::MAC {
                         sRS0,
                         vRS0,
@@ -140,6 +176,8 @@ impl PE {
             inst::ReLU { vRD, vRS0 } => {
                 let vrs0_lit = arf.read_vRF(vRS0);
                 ISSUE_EX_RF {
+                    valid: true,
+                    sim_req,
                     aluop: ALUop::ReLU {
                         vRS0,
                         vRS0_lit: vrs0_lit,

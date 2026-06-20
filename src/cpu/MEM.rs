@@ -293,9 +293,16 @@ impl SigFSM for MEM_stop_FSM {
                 ops
             }
             MEM_stop_FSM_states::Release => {
-                // Keep the WB latch stable for the release cycle so a dependent
-                // operation can consume the WB forwarding path instead of RF.
-                HashMap::from([(CPU_stages::WB, pipeline_action::Stall)])
+                // Keep the completed WB value stable while AGU/MEM advances
+                // once to clear its duplicate copy of the load. Otherwise EX
+                // sees the older AGU/MEM load first, reports RAW, and is then
+                // overwritten before it can consume wb_forward_rf.
+                HashMap::from([
+                    (CPU_stages::IF, pipeline_action::Stall),
+                    (CPU_stages::ID, pipeline_action::Stall),
+                    (CPU_stages::EX, pipeline_action::Stall),
+                    (CPU_stages::WB, pipeline_action::Stall),
+                ])
             }
             MEM_stop_FSM_states::Idle => HashMap::new(),
         }

@@ -5,7 +5,8 @@ pub mod IF;
 pub mod MEM;
 pub mod WB;
 pub mod pipeline;
-pub mod pipeline_tests;
+#[cfg(test)]
+pub mod pipeline_test;
 pub mod pipeline_util;
 pub mod signal_scoreboard;
 

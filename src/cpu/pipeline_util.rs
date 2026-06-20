@@ -60,7 +60,7 @@ impl CPU {
         self.ex_bypass_get_vreg(rs2, rs2_lit)
     }
 
-    pub fn agu_bypass_get_frs(&self, frs: u8, frs_lit: fatptr_rf) -> Option<fatptr_rf> {
+    pub fn agu_bypass_get_frs(&self, frs: u8, _frs_lit: fatptr_rf) -> Option<fatptr_rf> {
         // if frs == 0 {
         //     return Some(frs_lit);
         // }
@@ -92,7 +92,10 @@ impl CPU {
             }
         }
 
-        Some(frs_lit)
+        // wb_forward_rf bridges the cycle before WB commits. If that cache has
+        // since advanced, the value is already architectural; do not fall back
+        // to the potentially stale operand snapshot captured in ID.
+        self.RF.read_fregs(frs)
     }
 
     pub fn agu_bypass_get_rs1(&self, rs1: u8, rs1_lit: [u32; 4]) -> Option<[u32; 4]> {
@@ -127,7 +130,9 @@ impl CPU {
             }
         }
 
-        Some(rs1_lit)
+        // A stalled instruction can outlive the forwarding window. Once no
+        // in-flight producer matches, the committed RF is authoritative.
+        Some(self.RF.read_vregs(rs1))
     }
 
     pub fn agu_bypass_dma_op(&self, dma_op: DMAop) -> Option<DMAop> {
@@ -185,6 +190,8 @@ impl CPU {
             }
         }
 
-        Some(rs_lit)
+        // wb_forward_rf is overwritten only after its previous value reaches
+        // architectural RF, so RF closes the forwarding-window handoff.
+        Some(self.RF.read_vregs(rs))
     }
 }

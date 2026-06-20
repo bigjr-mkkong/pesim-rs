@@ -1,6 +1,6 @@
 use crate::cpu::RF::arch_rf;
 use crate::cpu::imem::IMEM;
-use crate::cpu::pimcpu_types::{CPU_stages, arch_action};
+use crate::cpu::pimcpu_types::{CPU_stages, arch_action, arch_dest};
 use std::cell::RefCell;
 use std::rc::Rc;
 
@@ -126,6 +126,7 @@ impl CPU {
         self.ready4ext_sig
     }
 
+    // Internal pause-resume delay timing simulation
     fn update_extsig_rdy(&mut self, winner_reason: Option<signal_reason>) {
         if self.ext_signal_delay_remaining > 0 {
             self.ext_signal_delay_remaining -= 1;
@@ -233,6 +234,15 @@ impl CPU {
         collect_stage_ops(CPU_stages::EX, ex_archop);
         collect_stage_ops(CPU_stages::ID, id_archop);
         collect_stage_ops(CPU_stages::IF, if_archop);
+
+        // arch_update increments PC by default. A stalled or flushed IF stage
+        // must therefore contribute an explicit hold unless an older stage is
+        // already redirecting/holding PC (for example, a resolved jump).
+        if stage_action(CPU_stages::IF) != pipeline_action::Normal
+            && !arch_ops.iter().any(|op| op.dest() == Some(arch_dest::PC))
+        {
+            arch_ops.push(arch_action::HoldPC);
+        }
 
         self.arch_update(arch_ops);
 

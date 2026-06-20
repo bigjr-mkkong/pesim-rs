@@ -3,3 +3,5 @@ pub mod dramsim3_cxx_ffi;
 pub mod dramsim3_wrapper;
 pub mod flat_memory;
 pub mod mem_portal;
+#[cfg(test)]
+pub mod mem_portal_test;

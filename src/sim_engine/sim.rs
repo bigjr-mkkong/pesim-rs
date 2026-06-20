@@ -9,6 +9,11 @@
  *      bool canAccept(uint64_t addr, bool is_write) const; //Done
  *      void enqueue(uint64_t addr, bool is_write); //Done
  *
+ *      TODO:
+ *      Implement following function:
+ *      void enqueue_with_data(uint64_t addr, uint64_t data, bool is_write);
+ *      In gem5 part
+ *
  *      double clockPeriod() const;
  *      unsigned int queueSize() const;
  *      unsigned int burstSize() const;
@@ -41,6 +46,7 @@ use crate::memory::dramsim3_wrapper::dramsim3_wrapper;
 use crate::memory::mem_portal::{dram_req, portal_req};
 use crate::sim_engine::engine::Engine;
 use crate::sim_engine::engine::EngineSchedulingMode;
+use crate::sim_engine::request_router::{is_pe_request, routing_addr};
 use crate::{DSIM3_CFG_PATH, DSIM3_OUT_DIR};
 use std::collections::HashMap;
 
@@ -100,59 +106,18 @@ impl Sim {
             .set_scheduling_mode(scheduling_mode)
     }
 
-    #[cfg(test)]
-    pub(crate) fn set_mode_for_test(&mut self, sim_mode: SimMode) {
-        self.sim_mode = sim_mode;
-    }
-
-    #[cfg(test)]
-    pub(crate) fn add_engine_with_scheduling_for_test(
-        &mut self,
-        cfg: engine_cfg,
-        scheduling_mode: EngineSchedulingMode,
-    ) {
-        match self.engines.entry(cfg) {
-            std::collections::hash_map::Entry::Occupied(_) => {
-                panic!("Cannot add engine with given cfg: already existed");
-            }
-            std::collections::hash_map::Entry::Vacant(ent) => {
-                let mut engine = match cfg {
-                    engine_cfg::CGO { .. } => Engine::new_cgo(),
-                    engine_cfg::FGO { .. } => Engine::new_fgo(),
-                };
-                engine
-                    .set_scheduling_mode(scheduling_mode)
-                    .expect("test scheduling mode should match engine configuration");
-                ent.insert(engine);
-            }
-        }
-    }
-
-    #[cfg(test)]
-    pub(crate) fn cgo_engine_cfg_for_addr_for_test(&mut self, addr: u64) -> engine_cfg {
-        let addr_bulk = self.dsim3.global_addr_to_local_components(addr);
-
-        engine_cfg::CGO {
-            ch: addr_bulk.channel,
-            ra: addr_bulk.rank,
-            bg: addr_bulk.bank_group,
-            ba: addr_bulk.bank,
-        }
-    }
-
-    #[cfg(test)]
-    pub(crate) fn addr_maps_to_engine_for_test(&mut self, addr: u64) -> bool {
-        self.get_engine_cfg(addr).is_some()
-    }
-
-    #[cfg(test)]
-    pub(crate) fn engine_mut_for_test(&mut self, cfg: engine_cfg) -> &mut Engine {
-        self.engines
-            .get_mut(&cfg)
-            .expect("Cannot find engine with given cfg")
-    }
-
     pub fn canAccept(&mut self, addr: u64, is_write: bool) -> bool {
+        if is_pe_request(addr) {
+            if !matches!(self.sim_mode, SimMode::Pim) {
+                return false;
+            }
+
+            return self
+                .get_engine_cfg(addr)
+                .and_then(|cfg| self.engines.get_mut(&cfg))
+                .is_some_and(|engine| engine.canAccept(addr, is_write));
+        }
+
         if let Some(cfg) = self.get_engine_cfg(addr) {
             return self
                 .engines
@@ -166,7 +131,9 @@ impl Sim {
 
     //This function will return None if addr belongs to non-pim area
     fn get_engine_cfg(&mut self, addr: u64) -> Option<engine_cfg> {
-        let addr_bulk = self.dsim3.global_addr_to_local_components(addr);
+        let addr_bulk = self
+            .dsim3
+            .global_addr_to_local_components(routing_addr(addr));
         let cgo_cfg = engine_cfg::CGO {
             ch: addr_bulk.channel,
             ra: addr_bulk.rank,
@@ -180,7 +147,9 @@ impl Sim {
             ba: addr_bulk.bank,
         };
 
-        if self.engines.contains_key(&cgo_cfg) {
+        if is_pe_request(addr) && self.engines.contains_key(&fgo_cfg) {
+            Some(fgo_cfg)
+        } else if self.engines.contains_key(&cgo_cfg) {
             Some(cgo_cfg)
         } else if self.engines.contains_key(&fgo_cfg) {
             Some(fgo_cfg)
@@ -190,7 +159,32 @@ impl Sim {
     }
 
     pub fn enqueue(&mut self, addr: u64, is_write: bool) {
-        let mut req = dram_req::new(addr, !is_write, false);
+        let req = dram_req::new(addr, !is_write, false);
+
+        if is_pe_request(addr) {
+            if !matches!(self.sim_mode, SimMode::Pim) {
+                panic!("cannot enqueue a PE instruction while Sim is in host mode");
+            }
+
+            let mut req = req;
+            req.set_id(self.dsim3.get_req_id());
+            req.set_issue_time(self.dsim3.get_clock_tick() as u64);
+
+            let cfg = self
+                .get_engine_cfg(addr)
+                .expect("PE instruction address does not target a configured engine");
+            let engine = self
+                .engines
+                .get_mut(&cfg)
+                .expect("Cannot detect available engine");
+            if !engine.canAccept(addr, is_write) {
+                panic!("PE instruction address does not target a compatible FGO/PE engine");
+            }
+            engine.host_push_req(portal_req::HOST_REQ { req });
+            return;
+        }
+
+        let mut req = req;
 
         if let SimMode::Pim = self.sim_mode {
             if let Some(cfg) = self.get_engine_cfg(addr) {
@@ -256,3 +250,7 @@ impl Sim {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "sim_test.rs"]
+mod sim_test;

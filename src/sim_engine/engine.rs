@@ -4,9 +4,19 @@ use crate::DSIM3_OUT_DIR;
 use crate::PE::pe_top::PE;
 use crate::memory::dramsim3_wrapper::dramsim3_wrapper;
 use crate::memory::mem_portal::{dram_portal, dram_req, portal_mode, portal_req};
+use crate::sim_engine::request_router::{decode_pe_inst, is_pe_request};
 use std::collections::VecDeque;
+#[cfg(test)]
+use std::sync::atomic::{AtomicU8, Ordering};
 
 const BATCH_SZ: u64 = 0;
+
+#[cfg(test)]
+const SCHED_PROBE_INVOKED: u8 = 1 << 0;
+#[cfg(test)]
+const SCHED_PROBE_ENTERED_HOST: u8 = 1 << 1;
+#[cfg(test)]
+const SCHED_PROBE_ENTERED_PIM: u8 = 1 << 2;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum EngineMode {
@@ -43,6 +53,7 @@ enum FgoRequestState {
 pub struct Engine {
     processor: EngineProcessor,
     host_pool: VecDeque<portal_req>,
+    host_complete_queue: VecDeque<dram_req>,
     dram_port: dram_portal,
     dsim3: dramsim3_wrapper,
     scheduling_mode: EngineSchedulingMode,
@@ -62,6 +73,9 @@ pub struct Engine {
     switch_delay_remaining: u64,
     switch_pause_cycles: u64,
     switch_resume_cycles: u64,
+    // Test-only pin-out. This field and all writes to it are absent from production builds.
+    #[cfg(test)]
+    scheduler_probe: AtomicU8,
 }
 
 impl Engine {
@@ -90,6 +104,7 @@ impl Engine {
             processor,
             dram_port,
             host_pool: VecDeque::new(),
+            host_complete_queue: VecDeque::new(),
             dsim3,
             scheduling_mode: EngineSchedulingMode::Unconfigured,
             mode: EngineMode::PIM,
@@ -106,6 +121,8 @@ impl Engine {
             switch_delay_remaining: 0,
             switch_pause_cycles: 0,
             switch_resume_cycles: 0,
+            #[cfg(test)]
+            scheduler_probe: AtomicU8::new(0),
         }
     }
 
@@ -114,7 +131,7 @@ impl Engine {
         scheduling_mode: EngineSchedulingMode,
     ) -> Result<(), &'static str> {
         if self.scheduling_mode != EngineSchedulingMode::Unconfigured {
-            // TODO: Support live scheduler reconfiguration by defining how active processor and
+            // NOTE: Support live scheduler reconfiguration by defining how active processor and
             // DRAM requests are drained and how transition timing is applied.
             return Err("engine scheduling mode can only be configured once");
         }
@@ -176,10 +193,6 @@ impl Engine {
         }
     }
 
-    /*
-     * switch() simulates the following automata:
-     * Host -> switch_delay(self-looping) -> PIM -> switch_delay(self-looping) -> Host
-     */
     fn switch_delay_done(&self) -> bool {
         match self.last_service_mode {
             EngineMode::PIM => {
@@ -201,6 +214,10 @@ impl Engine {
         }
     }
 
+    /*
+     * switch() simulates the following automata:
+     * Host -> switch_delay(self-looping) -> PIM -> switch_delay(self-looping) -> Host
+     */
     fn switch(&mut self, from: EngineMode) {
         match from {
             EngineMode::PIM => {
@@ -267,13 +284,19 @@ impl Engine {
     }
 
     pub fn schedule(&mut self) {
+        #[cfg(test)]
+        let mode_before = {
+            self.scheduler_probe
+                .fetch_or(SCHED_PROBE_INVOKED, Ordering::Relaxed);
+            self.mode
+        };
+
         match self.scheduling_mode {
             EngineSchedulingMode::Unconfigured => {
                 panic!("cannot schedule an engine before configuring its scheduling mode")
             }
             EngineSchedulingMode::CGO_only => {
                 self.force_pim_mode();
-                self.PIM_tick_rec += 1;
             }
             EngineSchedulingMode::HostOnly => {
                 self.force_host_mode();
@@ -285,8 +308,24 @@ impl Engine {
             EngineSchedulingMode::Host_CGO_share => self.schedule_host_cgo_share(),
             EngineSchedulingMode::Host_FGO_share => self.schedule_host_fgo_share(),
         }
+
+        #[cfg(test)]
+        match (mode_before, self.next_mode) {
+            (EngineMode::switch_delay, EngineMode::HOST) => {
+                self.scheduler_probe
+                    .fetch_or(SCHED_PROBE_ENTERED_HOST, Ordering::Relaxed);
+            }
+            (EngineMode::switch_delay, EngineMode::PIM) => {
+                self.scheduler_probe
+                    .fetch_or(SCHED_PROBE_ENTERED_PIM, Ordering::Relaxed);
+            }
+            _ => {}
+        }
     }
 
+    /*
+     * This implements a batch-based CFS for CGO and host
+     */
     fn schedule_host_cgo_share(&mut self) {
         match self.mode {
             EngineMode::PIM => {
@@ -411,6 +450,11 @@ impl Engine {
         self.fgo_request_state = FgoRequestState::HostInFlight;
     }
 
+    /*
+     * TODO
+     * This is the current FGO schedule algorithm
+     * It's now a basic round-robin, act like a stub for future F3FS implementation
+     */
     fn schedule_host_fgo_share(&mut self) {
         match self.mode {
             EngineMode::switch_delay => {
@@ -448,10 +492,38 @@ impl Engine {
      * This is the function used by Host to send request
      */
     pub fn host_push_req(&mut self, req: portal_req) {
-        self.host_pool.push_back(req);
+        match req {
+            // If request is from host and it's PE instruction
+            portal_req::HOST_REQ { req } if is_pe_request(req.get_addr()) => {
+                let instruction = decode_pe_inst(req.get_addr())
+                    .unwrap_or_else(|err| panic!("cannot decode PE request: {err}"));
+                match &mut self.processor {
+                    EngineProcessor::FGO(pe) => pe.push_host_req(req, instruction),
+                    EngineProcessor::CGO(_) => {
+                        panic!("cannot route a PE instruction to a CGO/CPU engine")
+                    }
+                }
+            }
+
+            //If request is from host but it's a regular DRAM access
+            portal_req::HOST_REQ { req } => {
+                self.host_pool.push_back(portal_req::HOST_REQ { req });
+            }
+            _ => {
+                eprintln!("Host cannot push PIM request");
+                unreachable!()
+            }
+            // portal_req::PIM_REQ { req } => {
+            //     self.host_pool.push_back(portal_req::PIM_REQ { req });
+            // }
+        }
     }
 
     pub fn canAccept(&mut self, addr: u64, is_write: bool) -> bool {
+        if is_pe_request(addr) {
+            return matches!(self.processor, EngineProcessor::FGO(_))
+                && decode_pe_inst(addr).is_ok();
+        }
         self.dsim3.WillAcceptTransaction(addr, is_write)
     }
 
@@ -481,12 +553,27 @@ impl Engine {
         }
     }
 
+    fn drain_host_completions(&mut self) {
+        if let EngineProcessor::FGO(pe) = &mut self.processor {
+            while pe.has_complete() {
+                self.host_complete_queue.push_back(
+                    pe.take_completed()
+                        .expect("PE completion queue changed while being drained"),
+                );
+            }
+        }
+
+        while let Some(req) = self.dram_port.take_host_completed() {
+            self.host_complete_queue.push_back(req);
+        }
+    }
+
     pub fn get_host_complete(&mut self) -> Option<dram_req> {
-        self.dram_port.take_host_completed()
+        self.host_complete_queue.pop_front()
     }
 
     pub fn host_has_complete(&self) -> bool {
-        self.dram_port.host_has_complete()
+        !self.host_complete_queue.is_empty()
     }
 
     pub fn tick(&mut self) {
@@ -517,6 +604,7 @@ impl Engine {
         for req in self.dsim3.ClockTick() {
             self.dram_port.complete(req);
         }
+        self.drain_host_completions();
 
         self.schedule();
         self.mode = self.next_mode;
@@ -525,146 +613,5 @@ impl Engine {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::PE::types::inst;
-
-    #[test]
-    fn scheduling_configuration_is_one_time_and_processor_checked() {
-        let mut cgo = Engine::new_cgo();
-        assert_eq!(
-            cgo.set_scheduling_mode(EngineSchedulingMode::Host_FGO_share),
-            Err("scheduling mode is incompatible with the engine processor")
-        );
-        cgo.set_scheduling_mode(EngineSchedulingMode::CGO_only)
-            .unwrap();
-        assert_eq!(
-            cgo.set_scheduling_mode(EngineSchedulingMode::Host_CGO_share),
-            Err("engine scheduling mode can only be configured once")
-        );
-
-        let mut fgo = Engine::new_fgo();
-        assert_eq!(
-            fgo.set_scheduling_mode(EngineSchedulingMode::CGO_only),
-            Err("scheduling mode is incompatible with the engine processor")
-        );
-        fgo.set_scheduling_mode(EngineSchedulingMode::Host_FGO_share)
-            .unwrap();
-    }
-
-    #[test]
-    #[should_panic(expected = "cannot tick an engine before configuring")]
-    fn unconfigured_engine_rejects_tick() {
-        Engine::new_cgo().tick();
-    }
-
-    #[test]
-    fn fgo_switch_delay_counts_complete_cycles_in_both_directions() {
-        let mut engine = Engine::new_fgo();
-        engine.set_external_signal_delays(2, 3);
-        engine
-            .set_scheduling_mode(EngineSchedulingMode::Host_FGO_share)
-            .unwrap();
-
-        engine.switch(EngineMode::PIM);
-        engine.mode = engine.next_mode;
-        for _ in 0..2 {
-            engine.schedule();
-            engine.mode = engine.next_mode;
-            assert_eq!(engine.mode, EngineMode::switch_delay);
-        }
-        engine.schedule();
-        engine.mode = engine.next_mode;
-        assert_eq!(engine.mode, EngineMode::HOST);
-
-        engine.switch(EngineMode::HOST);
-        engine.mode = engine.next_mode;
-        for _ in 0..3 {
-            engine.schedule();
-            engine.mode = engine.next_mode;
-            assert_eq!(engine.mode, EngineMode::switch_delay);
-        }
-        engine.schedule();
-        engine.mode = engine.next_mode;
-        assert_eq!(engine.mode, EngineMode::PIM);
-    }
-
-    #[test]
-    fn fgo_round_robin_completes_one_pe_and_fifo_host_request_at_a_time() {
-        let mut engine = Engine::new_fgo();
-        engine
-            .set_scheduling_mode(EngineSchedulingMode::Host_FGO_share)
-            .unwrap();
-
-        {
-            let pe = engine.get_pe();
-            pe.get_Arf().write_vRF(1, [4; 8]);
-            pe.get_Arf().write_vRF(2, [5; 8]);
-            pe.get_Arf().write_vRF(4, [20; 8]);
-            pe.get_Arf().write_vRF(5, [3; 8]);
-            pe.push_host_inst(inst::ADD128 {
-                vRD: 3,
-                vRS0: 1,
-                vRS1: 2,
-            });
-            pe.push_host_inst(inst::SUB128 {
-                vRD: 6,
-                vRS0: 4,
-                vRS1: 5,
-            });
-        }
-
-        engine.host_push_req(portal_req::HOST_REQ {
-            req: dram_req::new(0x40, true, false),
-        });
-        engine.host_push_req(portal_req::HOST_REQ {
-            req: dram_req::new(0x80, true, false),
-        });
-
-        let mut completed_addrs = Vec::new();
-        for _ in 0..20_000 {
-            engine.tick();
-            while let Some(req) = engine.get_host_complete() {
-                completed_addrs.push(req.get_addr());
-            }
-
-            let pe_done = {
-                let pe = engine.get_pe();
-                pe.get_Arf().read_vRF(3) == [9; 8] && pe.get_Arf().read_vRF(6) == [17; 8]
-            };
-            if pe_done && completed_addrs.len() == 2 {
-                break;
-            }
-        }
-
-        assert_eq!(completed_addrs, vec![0x40, 0x80]);
-        assert_eq!(engine.get_pe().get_Arf().read_vRF(3), [9; 8]);
-        assert_eq!(engine.get_pe().get_Arf().read_vRF(6), [17; 8]);
-    }
-
-    #[test]
-    fn fgo_waits_for_memory_instruction_completion() {
-        let mut engine = Engine::new_fgo();
-        engine
-            .set_scheduling_mode(EngineSchedulingMode::Host_FGO_share)
-            .unwrap();
-        {
-            let pe = engine.get_pe();
-            pe.get_fmem().mem_write_s(0x300, 2468).unwrap();
-            pe.push_host_inst(inst::LD32 {
-                sRD: 7,
-                addr: 0x300,
-            });
-        }
-
-        for _ in 0..20_000 {
-            engine.tick();
-            if engine.get_pe().get_Arf().read_sRF(7) == 2468 {
-                assert!(!engine.get_pe().has_buffered_inst());
-                return;
-            }
-        }
-
-        panic!("FGO memory instruction did not complete through the engine DRAM path");
-    }
-}
+#[path = "engine_test.rs"]
+mod engine_test;
