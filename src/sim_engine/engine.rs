@@ -1,7 +1,6 @@
 use crate::CPU;
-use crate::DSIM3_CFG_PATH;
-use crate::DSIM3_OUT_DIR;
 use crate::PE::pe_top::PE;
+use crate::dsim3_paths;
 use crate::memory::dramsim3_wrapper::dramsim3_wrapper;
 use crate::memory::mem_portal::{dram_portal, dram_req, portal_mode, portal_req};
 use crate::sim_engine::request_router::{decode_pe_inst, is_pe_request};
@@ -97,7 +96,8 @@ impl Engine {
             EngineProcessor::FGO(PE::new_with_dram_port(dram_port.clone()))
         };
 
-        let mut dsim3 = dramsim3_wrapper::new(DSIM3_CFG_PATH, DSIM3_OUT_DIR, 0, 0, 0, 0);
+        let (cfg_path, out_dir) = dsim3_paths();
+        let mut dsim3 = dramsim3_wrapper::new(cfg_path, out_dir, 0, 0, 0, 0);
         dsim3.SetPimMode(true);
 
         Self {
@@ -495,7 +495,7 @@ impl Engine {
         match req {
             // If request is from host and it's PE instruction
             portal_req::HOST_REQ { req } if is_pe_request(req.get_addr()) => {
-                let instruction = decode_pe_inst(req.get_addr())
+                let instruction = decode_pe_inst(req.get_addr(), req.get_payload())
                     .unwrap_or_else(|err| panic!("cannot decode PE request: {err}"));
                 match &mut self.processor {
                     EngineProcessor::FGO(pe) => pe.push_host_req(req, instruction),
@@ -512,17 +512,17 @@ impl Engine {
             _ => {
                 eprintln!("Host cannot push PIM request");
                 unreachable!()
-            }
-            // portal_req::PIM_REQ { req } => {
-            //     self.host_pool.push_back(portal_req::PIM_REQ { req });
-            // }
+            } // portal_req::PIM_REQ { req } => {
+              //     self.host_pool.push_back(portal_req::PIM_REQ { req });
+              // }
         }
     }
 
     pub fn canAccept(&mut self, addr: u64, is_write: bool) -> bool {
         if is_pe_request(addr) {
-            return matches!(self.processor, EngineProcessor::FGO(_))
-                && decode_pe_inst(addr).is_ok();
+            // The public canAccept contract has no payload. Address can select
+            // the PE route here; payload validity is checked during enqueue.
+            return matches!(self.processor, EngineProcessor::FGO(_));
         }
         self.dsim3.WillAcceptTransaction(addr, is_write)
     }

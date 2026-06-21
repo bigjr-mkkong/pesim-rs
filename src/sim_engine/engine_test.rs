@@ -231,7 +231,7 @@ fn fgo_decodes_pe_request_and_returns_original_dram_req() {
     engine.get_pe().get_Arf().write_vRF(1, [4; 8]);
     engine.get_pe().get_Arf().write_vRF(2, [5; 8]);
 
-    let addr = encode_pe_inst(
+    let (addr, payload) = encode_pe_inst(
         pe_inst::ADD128 {
             vRD: 3,
             vRS0: 1,
@@ -240,13 +240,14 @@ fn fgo_decodes_pe_request_and_returns_original_dram_req() {
         0,
     );
     engine.host_push_req(portal_req::HOST_REQ {
-        req: dram_req::new(addr, true, false),
+        req: dram_req::new_with_payload(addr, payload, true, false),
     });
 
     for _ in 0..16 {
         engine.tick();
         if let Some(completed) = engine.get_host_complete() {
             assert_eq!(completed.get_addr(), addr);
+            assert_eq!(completed.get_payload(), &payload);
             assert_eq!(engine.get_pe().get_Arf().read_vRF(3), [9; 8]);
             return;
         }
@@ -261,9 +262,9 @@ fn encoded_nop_is_a_valid_pe_request() {
     engine
         .set_scheduling_mode(EngineSchedulingMode::Host_FGO_share)
         .unwrap();
-    let addr = encode_pe_inst(pe_inst::NOP, 0);
+    let (addr, payload) = encode_pe_inst(pe_inst::NOP, 0);
     engine.host_push_req(portal_req::HOST_REQ {
-        req: dram_req::new(addr, true, false),
+        req: dram_req::new_with_payload(addr, payload, true, false),
     });
 
     for _ in 0..16 {
@@ -280,6 +281,6 @@ fn encoded_nop_is_a_valid_pe_request() {
 #[test]
 fn cgo_rejects_encoded_pe_request() {
     let mut engine = Engine::new_cgo();
-    let addr = encode_pe_inst(pe_inst::NOP, 0);
+    let (addr, _) = encode_pe_inst(pe_inst::NOP, 0);
     assert!(!engine.canAccept(addr, false));
 }

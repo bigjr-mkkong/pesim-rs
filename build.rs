@@ -10,6 +10,7 @@ fn main() {
     //Build DRAMsim3
     std::fs::create_dir_all(&build_dir).expect("Failed to create build directory");
     let cmake_status = Command::new("cmake")
+        .arg("-DCMAKE_POSITION_INDEPENDENT_CODE=ON")
         .arg("..")
         .current_dir(&build_dir)
         .status()

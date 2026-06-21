@@ -2,9 +2,12 @@ use crate::CPU;
 use std::cell::RefCell;
 use std::rc::Rc;
 
+pub type cacheline_payload = [u64; 8];
+
 #[derive(Clone)]
 pub struct dram_req {
     addr: u64,
+    payload: cacheline_payload,
     id: Option<u64>,
     issue_time: Option<u64>,
     is_read: bool,
@@ -13,8 +16,18 @@ pub struct dram_req {
 
 impl dram_req {
     pub fn new(addr: u64, is_read_: bool, is_pim_: bool) -> Self {
+        Self::new_with_payload(addr, [0; 8], is_read_, is_pim_)
+    }
+
+    pub fn new_with_payload(
+        addr: u64,
+        payload: cacheline_payload,
+        is_read_: bool,
+        is_pim_: bool,
+    ) -> Self {
         Self {
             addr,
+            payload,
             id: None,
             issue_time: None,
             is_read: is_read_,
@@ -40,6 +53,10 @@ impl dram_req {
 
     pub fn get_addr(&self) -> u64 {
         self.addr
+    }
+
+    pub fn get_payload(&self) -> &cacheline_payload {
+        &self.payload
     }
 
     pub fn get_id(&self) -> Option<u64> {

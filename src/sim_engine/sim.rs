@@ -8,11 +8,7 @@
  *
  *      bool canAccept(uint64_t addr, bool is_write) const; //Done
  *      void enqueue(uint64_t addr, bool is_write); //Done
- *
- *      TODO:
- *      Implement following function:
- *      void enqueue_with_data(uint64_t addr, uint64_t data, bool is_write);
- *      In gem5 part
+ *      void enqueue_with_data(uint64_t addr, cacheline payload, bool is_write);
  *
  *      double clockPeriod() const;
  *      unsigned int queueSize() const;
@@ -40,14 +36,21 @@
  * it will only pop resunt out from Engine instead of mono_dsim3(mono_dsim3 still tick with Engine).
  * This is because we want to maintain consistent dram timing model when switching back to Regular
  * from PESIM
+ *
+ * gem5 side already had ffi headers implemented. wrapper is not using it rn as rust side haven't
+ * done yet but it's all ready
+ *
+ * TODO
+ * rust side need to implement a pesim_ffi.rs to expose above function's implementation. Details
+ * refer to gem5/src/mem/pesim_ffi.h
  */
 
+use crate::dsim3_paths;
 use crate::memory::dramsim3_wrapper::dramsim3_wrapper;
-use crate::memory::mem_portal::{dram_req, portal_req};
+use crate::memory::mem_portal::{cacheline_payload, dram_req, portal_req};
 use crate::sim_engine::engine::Engine;
 use crate::sim_engine::engine::EngineSchedulingMode;
 use crate::sim_engine::request_router::{is_pe_request, routing_addr};
-use crate::{DSIM3_CFG_PATH, DSIM3_OUT_DIR};
 use std::collections::HashMap;
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
@@ -70,7 +73,8 @@ pub struct Sim {
 
 impl Sim {
     pub fn new() -> Self {
-        let mut dsim3_inst = dramsim3_wrapper::new(DSIM3_CFG_PATH, DSIM3_OUT_DIR, 0, 0, 0, 0);
+        let (cfg_path, out_dir) = dsim3_paths();
+        let mut dsim3_inst = dramsim3_wrapper::new(cfg_path, out_dir, 0, 0, 0, 0);
         dsim3_inst.SetPimMode(false); //Set dsim3 as non-pim as it handle normal traces
         Self {
             engines: HashMap::new(),
@@ -104,6 +108,20 @@ impl Sim {
             .get_mut(&cfg)
             .ok_or("cannot configure scheduling for an engine that does not exist")?
             .set_scheduling_mode(scheduling_mode)
+    }
+
+    pub fn clock_period(&mut self) -> f64 {
+        self.dsim3.get_TCK()
+    }
+
+    pub fn queue_size(&mut self) -> u32 {
+        self.dsim3.get_queue_size().max(0) as u32
+    }
+
+    pub fn burst_size(&mut self) -> u32 {
+        let bus_bytes = self.dsim3.get_bus_bits().max(0) as u32 / 8;
+        let burst_length = self.dsim3.get_burst_length().max(0) as u32;
+        bus_bytes.saturating_mul(burst_length)
     }
 
     pub fn canAccept(&mut self, addr: u64, is_write: bool) -> bool {
@@ -159,7 +177,11 @@ impl Sim {
     }
 
     pub fn enqueue(&mut self, addr: u64, is_write: bool) {
-        let req = dram_req::new(addr, !is_write, false);
+        self.enqueue_with_data(addr, [0; 8], is_write);
+    }
+
+    pub fn enqueue_with_data(&mut self, addr: u64, payload: cacheline_payload, is_write: bool) {
+        let req = dram_req::new_with_payload(addr, payload, !is_write, false);
 
         if is_pe_request(addr) {
             if !matches!(self.sim_mode, SimMode::Pim) {

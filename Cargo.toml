@@ -3,6 +3,9 @@ name = "pesim-rs"
 version = "0.1.0"
 edition = "2024"
 
+[lib]
+crate-type = ["staticlib"]
+
 [dependencies]
 cxx = "1.0.194"
 rustc-hash = "2.1.2"

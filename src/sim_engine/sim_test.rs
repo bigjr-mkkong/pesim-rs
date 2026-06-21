@@ -111,7 +111,32 @@ struct HostDriverResult {
     max_outstanding: usize,
 }
 
-fn run_host_driver(sim: &mut Sim, requests: &[(u64, bool)]) -> HostDriverResult {
+#[derive(Clone, Copy)]
+struct HostDriverRequest {
+    addr: u64,
+    payload: [u64; 8],
+    is_write: bool,
+}
+
+impl HostDriverRequest {
+    fn memory(addr: u64, is_write: bool) -> Self {
+        Self {
+            addr,
+            payload: [0; 8],
+            is_write,
+        }
+    }
+
+    fn pe(addr: u64, payload: [u64; 8]) -> Self {
+        Self {
+            addr,
+            payload,
+            is_write: false,
+        }
+    }
+}
+
+fn run_host_driver(sim: &mut Sim, requests: &[HostDriverRequest]) -> HostDriverResult {
     let mut submitted = 0;
     let mut completions = Vec::new();
     let mut max_outstanding = 0;
@@ -119,10 +144,10 @@ fn run_host_driver(sim: &mut Sim, requests: &[(u64, bool)]) -> HostDriverResult 
     for cycle in 1..=MAX_DRAIN_TICKS {
         // Model a host that can issue at most one request per cycle and obeys
         // backpressure instead of preloading the simulator with a fixed batch.
-        if let Some((addr, is_write)) = requests.get(submitted).copied()
-            && sim.canAccept(addr, is_write)
+        if let Some(request) = requests.get(submitted).copied()
+            && sim.canAccept(request.addr, request.is_write)
         {
-            sim.enqueue(addr, is_write);
+            sim.enqueue_with_data(request.addr, request.payload, request.is_write);
             submitted += 1;
         }
 
@@ -151,6 +176,13 @@ fn run_host_driver(sim: &mut Sim, requests: &[(u64, bool)]) -> HostDriverResult 
         completions.len(),
         requests.len()
     );
+}
+
+fn expected_host_requests(requests: &[HostDriverRequest]) -> Vec<(u64, bool)> {
+    requests
+        .iter()
+        .map(|request| (request.addr, request.is_write))
+        .collect()
 }
 
 fn assert_completions_carry_issue_times(completions: &[(dram_req, u64)]) {
@@ -512,7 +544,7 @@ fn sim_routes_encoded_request_to_pe_and_returns_dram_req_completion() {
         .get_Arf()
         .write_vRF(2, [8; 8]);
 
-    let addr = encode_pe_inst(
+    let (addr, payload) = encode_pe_inst(
         pe_inst::ADD128 {
             vRD: 3,
             vRS0: 1,
@@ -521,7 +553,7 @@ fn sim_routes_encoded_request_to_pe_and_returns_dram_req_completion() {
         0,
     );
     assert!(sim.canAccept(addr, false));
-    sim.enqueue(addr, false);
+    sim.enqueue_with_data(addr, payload, false);
 
     let completions = drain_until_completions(&mut sim, 1);
     assert_eq!(completions[0].0.get_addr(), addr);
@@ -537,7 +569,7 @@ fn sim_routes_encoded_request_to_pe_and_returns_dram_req_completion() {
 fn sim_rejects_encoded_request_without_fgo_engine() {
     let mut sim = Sim::new();
     sim.set_mode_for_test(SimMode::Pim);
-    let addr = encode_pe_inst(pe_inst::NOP, 0);
+    let (addr, _) = encode_pe_inst(pe_inst::NOP, 0);
 
     assert!(!sim.canAccept(addr, false));
 }
@@ -557,8 +589,8 @@ fn sim_CGO_host_together() {
     let outside = find_addrs_outside_engine_area(&mut sim, 12);
     let mut requests = Vec::with_capacity(24);
     for idx in 0..12 {
-        requests.push((inside[idx], idx % 2 == 0));
-        requests.push((outside[idx], idx % 3 == 0));
+        requests.push(HostDriverRequest::memory(inside[idx], idx % 2 == 0));
+        requests.push(HostDriverRequest::memory(outside[idx], idx % 3 == 0));
     }
 
     let result = run_host_driver(&mut sim, &requests);
@@ -568,7 +600,7 @@ fn sim_CGO_host_together() {
         "host driver never had concurrent outstanding requests"
     );
     assert_completions_carry_issue_times(&result.completions);
-    assert_completed_requests_match(&result.completions, &requests);
+    assert_completed_requests_match(&result.completions, &expected_host_requests(&requests));
 
     tick_pim_program(&mut sim);
     let engine = sim.engine_mut_for_test(cfg);
@@ -637,9 +669,10 @@ fn sim_FGO_host_together() {
     let mut requests = Vec::with_capacity(pe_instructions.len() * 3);
 
     for (idx, instruction) in pe_instructions.into_iter().enumerate() {
-        requests.push((encode_pe_inst(instruction, inside[idx]), false));
-        requests.push((inside[idx], idx % 2 == 0));
-        requests.push((outside[idx], idx % 2 != 0));
+        let (addr, payload) = encode_pe_inst(instruction, inside[idx]);
+        requests.push(HostDriverRequest::pe(addr, payload));
+        requests.push(HostDriverRequest::memory(inside[idx], idx % 2 == 0));
+        requests.push(HostDriverRequest::memory(outside[idx], idx % 2 != 0));
     }
 
     let result = run_host_driver(&mut sim, &requests);
@@ -649,7 +682,7 @@ fn sim_FGO_host_together() {
         "host driver never had concurrent outstanding requests"
     );
     assert_completions_carry_issue_times(&result.completions);
-    assert_completed_requests_match(&result.completions, &requests);
+    assert_completed_requests_match(&result.completions, &expected_host_requests(&requests));
 
     let engine = sim.engine_mut_for_test(cfg);
     assert!(engine.scheduler_was_invoked_for_test());

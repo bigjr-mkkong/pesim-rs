@@ -1,13 +1,17 @@
 use crate::PE::types::inst;
+use crate::memory::mem_portal::cacheline_payload;
 
 // Temporary host-address encoding. Keep all mapping details in this module so
 // the final address-to-instruction format can replace it without touching the
 // simulator or engine scheduling code.
 const PE_MARKER_MASK: u64 = 0xf000_0000_0000_0000;
 const PE_MARKER: u64 = 0xf000_0000_0000_0000;
-const OPCODE_SHIFT: u32 = 56;
+const OPCODE_SHIFT: u32 = 0;
+const RD_SHIFT: u32 = 4;
+const RS0_SHIFT: u32 = 8;
+const RS1_SHIFT: u32 = 12;
 const REG_MASK: u64 = 0xf;
-const ROUTING_ADDR_MASK: u64 = (1_u64 << 44) - 1;
+const ROUTING_ADDR_MASK: u64 = !PE_MARKER_MASK;
 
 const OP_NOP: u8 = 0;
 const OP_ADD128: u8 = 1;
@@ -25,25 +29,18 @@ pub fn routing_addr(addr: u64) -> u64 {
     }
 }
 
-pub fn decode_pe_inst(addr: u64) -> Result<inst, &'static str> {
+pub fn decode_pe_inst(addr: u64, payload: &cacheline_payload) -> Result<inst, &'static str> {
     if !is_pe_request(addr) {
         return Err("address is not encoded as a PE instruction");
     }
 
-    let opcode = ((addr >> OPCODE_SHIFT) & 0xf) as u8;
-    let rd = ((addr >> 52) & REG_MASK) as u8;
-    let rs0 = ((addr >> 48) & REG_MASK) as u8;
-    let rs1 = ((addr >> 44) & REG_MASK) as u8;
-
-    /*
-     * TODO
-     * current implementation is for end-test only, real integration should use addr as opcode and
-     * data payload as oprands.
-     *
-     * Implement gem5 stub for this function first, then back here and change mapping
-     *
-     * In this case, decode_pe_inst should contain a data field, as well as enqueue
-     */
+    // Temporary configurable mapping: address selects the PE request space and
+    // target engine, while payload word 0 carries opcode/register fields.
+    let encoded = payload[0];
+    let opcode = ((encoded >> OPCODE_SHIFT) & 0xf) as u8;
+    let rd = ((encoded >> RD_SHIFT) & REG_MASK) as u8;
+    let rs0 = ((encoded >> RS0_SHIFT) & REG_MASK) as u8;
+    let rs1 = ((encoded >> RS1_SHIFT) & REG_MASK) as u8;
     match opcode {
         OP_NOP => Ok(inst::NOP),
         OP_ADD128 => Ok(inst::ADD128 {

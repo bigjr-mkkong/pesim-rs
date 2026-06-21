@@ -1,6 +1,7 @@
 use crate::memory::dramsim3_cxx_ffi::dramsim3_ffi::*;
 use crate::memory::mem_portal::dram_req;
 use std::collections::{HashMap, VecDeque};
+use std::path::Path;
 
 pub struct dramsim3_wrapper {
     ms: cxx::UniquePtr<dramsim3_ext>,
@@ -21,7 +22,23 @@ pub struct dramsim3_wrapper {
 unsafe impl Send for dramsim3_wrapper {}
 
 impl dramsim3_wrapper {
-    pub fn new(cfg_path: &str, out_dir: &str, ch_: u64, ra_: u64, bg_: u64, ba_: u64) -> Self {
+    pub fn new(
+        cfg_path: impl AsRef<Path>,
+        out_dir: impl AsRef<Path>,
+        ch_: u64,
+        ra_: u64,
+        bg_: u64,
+        ba_: u64,
+    ) -> Self {
+        let cfg_path = cfg_path
+            .as_ref()
+            .to_str()
+            .expect("DRAMSim3 configuration path must be valid UTF-8");
+        let out_dir = out_dir
+            .as_ref()
+            .to_str()
+            .expect("DRAMSim3 output path must be valid UTF-8");
+
         dramsim3_wrapper {
             ms: create_sim(cfg_path, out_dir),
             pend_read: HashMap::new(),
