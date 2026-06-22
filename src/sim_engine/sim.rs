@@ -39,10 +39,6 @@
  *
  * gem5 side already had ffi headers implemented. wrapper is not using it rn as rust side haven't
  * done yet but it's all ready
- *
- * TODO
- * rust side need to implement a pesim_ffi.rs to expose above function's implementation. Details
- * refer to gem5/src/mem/pesim_ffi.h
  */
 
 use crate::dsim3_paths;

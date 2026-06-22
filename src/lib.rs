@@ -5,32 +5,32 @@
 use cpu::pipeline::CPU;
 use std::path::PathBuf;
 
-pub const DSIM3_CFG_PATH: &str = "cfg/DDR4_8Gb_x4_2400_pim.ini";
-pub const DSIM3_OUT_DIR: &str = "output";
+/*
+ * TODO
+ * Remember to change it back to path used in testing if running test
+ */
+pub const DSIM3_CFG_PATH: &str = "/gem5/ext/pesim-rs/cfg/DDR4_8Gb_x4_2400_pim.ini";
+
+pub const DSIM3_OUT_DIR: &str = "/gem5/ext/pesim-rs/output";
 
 fn dsim3_paths() -> (PathBuf, PathBuf) {
-    let executable = std::env::current_exe()
-        .unwrap_or_else(|error| panic!("cannot locate the PESim runtime artifact: {error}"));
-    let executable_dir = executable.parent().unwrap_or_else(|| {
-        panic!(
-            "PESim runtime artifact has no parent: {}",
-            executable.display()
-        )
-    });
+    let config_path = PathBuf::from(DSIM3_CFG_PATH);
+    let out_dir = PathBuf::from(DSIM3_OUT_DIR);
 
-    // A Rust static library becomes part of its final executable. Resolve assets from that
-    // runtime artifact; walking ancestors also handles Cargo test binaries in target/*/deps.
-    for base_dir in executable_dir.ancestors() {
-        let config_path = base_dir.join(DSIM3_CFG_PATH);
-        if config_path.is_file() {
-            return (config_path, base_dir.join(DSIM3_OUT_DIR));
-        }
+    if !config_path.is_file() {
+        panic!("cannot find DSIM3 config file: {}", config_path.display());
     }
 
-    panic!(
-        "cannot find {DSIM3_CFG_PATH} relative to PESim runtime artifact {}",
-        executable.display()
-    );
+    if !out_dir.exists() {
+        std::fs::create_dir_all(&out_dir).unwrap_or_else(|error| {
+            panic!(
+                "cannot create DSIM3 output directory {}: {error}",
+                out_dir.display()
+            )
+        });
+    }
+
+    (config_path, out_dir)
 }
 
 mod PE;
@@ -153,10 +153,21 @@ fn with_body_mut_void(sim: *mut PESim_body, f: impl FnOnce(&mut PESim_body)) {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn pesim_new() -> *mut PESim_body {
-    catch_unwind(AssertUnwindSafe(|| {
+    match catch_unwind(AssertUnwindSafe(|| {
         Box::into_raw(Box::new(PESim_body::new()))
-    }))
-    .unwrap_or(std::ptr::null_mut())
+    })) {
+        Ok(sim) => sim,
+        Err(payload) => {
+            let message = payload
+                .downcast_ref::<&str>()
+                .copied()
+                .or_else(|| payload.downcast_ref::<String>().map(String::as_str))
+                .unwrap_or("non-string panic payload");
+
+            eprintln!("pesim_new: PESim_body::new() panicked: {message}");
+            std::ptr::null_mut()
+        }
+    }
 }
 
 #[unsafe(no_mangle)]

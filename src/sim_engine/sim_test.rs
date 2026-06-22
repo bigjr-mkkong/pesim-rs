@@ -611,6 +611,12 @@ fn sim_CGO_host_together() {
 }
 
 #[test]
+fn sim_general_test() {
+    let mut sim = Sim::new();
+    assert!(sim.burst_size() != 0, "sim burst size is zero");
+}
+
+#[test]
 fn sim_FGO_host_together() {
     let mut sim = Sim::new();
     sim.set_mode_for_test(SimMode::Pim);
