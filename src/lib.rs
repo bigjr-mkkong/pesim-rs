@@ -9,9 +9,9 @@ use std::path::PathBuf;
  * TODO
  * Remember to change it back to path used in testing if running test
  */
-pub const DSIM3_CFG_PATH: &str = "/gem5/ext/pesim-rs/cfg/DDR4_8Gb_x4_2400_pim.ini";
+pub const DSIM3_CFG_PATH: &str = "/gem5/ext/pesim/pesim-rs/cfg/DDR4_8Gb_x4_2400_pim.ini";
 
-pub const DSIM3_OUT_DIR: &str = "/gem5/ext/pesim-rs/output";
+pub const DSIM3_OUT_DIR: &str = "/gem5/ext/pesim/pesim-rs/output";
 
 fn dsim3_paths() -> (PathBuf, PathBuf) {
     let config_path = PathBuf::from(DSIM3_CFG_PATH);
