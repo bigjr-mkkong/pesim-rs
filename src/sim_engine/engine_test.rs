@@ -35,6 +35,7 @@ fn engine_runs_pim_load_through_mem_fsm_and_dram_portal() {
         .write_fregs(0, fatptr_rf::new(0, 0));
     engine.get_cpu().get_fmem().mem_write_data(0, &[42; 4]);
     engine.get_cpu().get_RF().write_vregs(3, [0; 4]);
+    engine.get_cpu().start();
 
     let prog = [
         inst::LD128 { rd: 3, frs: 0 },
@@ -81,7 +82,8 @@ fn dramsim3_wrapper_test() {
 }
 
 use crate::PE::types::inst as pe_inst;
-use crate::sim_engine::request_router_test::encode_pe_inst;
+use crate::sim_engine::request_router::pim_cmd;
+use crate::sim_engine::request_router_test::{encode_fgo_cmd, encode_pim_cmd};
 
 #[test]
 fn scheduling_configuration_is_one_time_and_processor_checked() {
@@ -231,16 +233,13 @@ fn fgo_decodes_pe_request_and_returns_original_dram_req() {
     engine.get_pe().get_Arf().write_vRF(1, [4; 8]);
     engine.get_pe().get_Arf().write_vRF(2, [5; 8]);
 
-    let (addr, payload) = encode_pe_inst(
-        pe_inst::ADD128 {
-            vRD: 3,
-            vRS0: 1,
-            vRS1: 2,
-        },
-        0,
-    );
+    let (addr, payload) = encode_fgo_cmd(pe_inst::ADD128 {
+        vRD: 3,
+        vRS0: 1,
+        vRS1: 2,
+    });
     engine.host_push_req(portal_req::HOST_REQ {
-        req: dram_req::new_with_payload(addr, payload, true, false),
+        req: dram_req::new_with_payload(addr, payload, false, false),
     });
 
     for _ in 0..16 {
@@ -253,7 +252,7 @@ fn fgo_decodes_pe_request_and_returns_original_dram_req() {
         }
     }
 
-    panic!("encoded PE request did not complete");
+    panic!("encoded FGO command did not complete");
 }
 
 #[test]
@@ -262,9 +261,9 @@ fn encoded_nop_is_a_valid_pe_request() {
     engine
         .set_scheduling_mode(EngineSchedulingMode::Host_FGO_share)
         .unwrap();
-    let (addr, payload) = encode_pe_inst(pe_inst::NOP, 0);
+    let (addr, payload) = encode_fgo_cmd(pe_inst::NOP);
     engine.host_push_req(portal_req::HOST_REQ {
-        req: dram_req::new_with_payload(addr, payload, true, false),
+        req: dram_req::new_with_payload(addr, payload, false, false),
     });
 
     for _ in 0..16 {
@@ -281,6 +280,85 @@ fn encoded_nop_is_a_valid_pe_request() {
 #[test]
 fn cgo_rejects_encoded_pe_request() {
     let mut engine = Engine::new_cgo();
-    let (addr, _) = encode_pe_inst(pe_inst::NOP, 0);
-    assert!(!engine.canAccept(addr, false));
+    let (addr, _) = encode_fgo_cmd(pe_inst::NOP);
+    assert!(!engine.canAccept(addr, true));
+}
+
+#[test]
+fn fgo_rejects_cgo_commands_and_cgo_query_is_read_only() {
+    let mut fgo = Engine::new_fgo();
+    let (query_addr, _) = encode_pim_cmd(pim_cmd::CgoQuery);
+    let (start_addr, _) = encode_pim_cmd(pim_cmd::CgoStart);
+    assert!(!fgo.canAccept(query_addr, false));
+    assert!(!fgo.canAccept(start_addr, true));
+
+    let mut cgo = Engine::new_cgo();
+    assert!(cgo.canAccept(query_addr, false));
+    assert!(!cgo.canAccept(query_addr, true));
+    assert!(cgo.canAccept(start_addr, true));
+    assert!(!cgo.canAccept(start_addr, false));
+}
+
+#[test]
+fn cgo_start_gates_cpu_execution_and_query_reports_finished() {
+    let mut engine = Engine::new_cgo();
+    engine
+        .set_scheduling_mode(EngineSchedulingMode::CGO_only)
+        .unwrap();
+    engine.get_cpu().get_RF().write_vregs(1, [3; 4]);
+    engine.get_cpu().get_RF().write_vregs(2, [4; 4]);
+    engine.get_cpu().get_imem().flash_in(&[
+        inst::ADD128 {
+            rd: 3,
+            rs1: 1,
+            rs2: 2,
+        },
+        inst::EqualExit { rd: 3, rs1: 3 },
+    ]);
+
+    for _ in 0..8 {
+        engine.tick();
+    }
+    assert_eq!(engine.get_cpu().get_RF().read_vregs(3), [0; 4]);
+
+    let (query_addr, query_payload) = encode_pim_cmd(pim_cmd::CgoQuery);
+    engine.host_push_req(portal_req::HOST_REQ {
+        req: dram_req::new_with_payload(query_addr, query_payload, true, false),
+    });
+    engine.tick();
+    let before = engine
+        .get_host_complete()
+        .expect("CGO query should complete on the next tick");
+    assert_eq!(before.get_payload()[0], 0);
+
+    let (start_addr, start_payload) = encode_pim_cmd(pim_cmd::CgoStart);
+    engine.host_push_req(portal_req::HOST_REQ {
+        req: dram_req::new_with_payload(start_addr, start_payload, false, false),
+    });
+    engine.tick();
+    assert_eq!(
+        engine
+            .get_host_complete()
+            .expect("CGO start should complete on the next tick")
+            .get_addr(),
+        start_addr
+    );
+
+    for _ in 0..10_000 {
+        engine.tick();
+        if engine.get_cpu().get_RF().read_vregs(3) == [7; 4] && engine.get_cpu().is_finished() {
+            break;
+        }
+    }
+    assert_eq!(engine.get_cpu().get_RF().read_vregs(3), [7; 4]);
+    assert!(engine.get_cpu().is_finished());
+
+    engine.host_push_req(portal_req::HOST_REQ {
+        req: dram_req::new_with_payload(query_addr, query_payload, true, false),
+    });
+    engine.tick();
+    let after = engine
+        .get_host_complete()
+        .expect("CGO query should complete on the next tick");
+    assert_eq!(after.get_payload()[0], 1);
 }

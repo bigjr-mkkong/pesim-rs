@@ -3,7 +3,9 @@ use crate::PE::pe_top::PE;
 use crate::dsim3_paths;
 use crate::memory::dramsim3_wrapper::dramsim3_wrapper;
 use crate::memory::mem_portal::{dram_portal, dram_req, portal_mode, portal_req};
-use crate::sim_engine::request_router::{decode_pe_inst, is_pe_request};
+use crate::sim_engine::request_router::{
+    decode_pim_cmd, is_pim_cmd_request, pim_cmd, validate_pim_cmd_access,
+};
 use std::collections::VecDeque;
 #[cfg(test)]
 use std::sync::atomic::{AtomicU8, Ordering};
@@ -45,6 +47,12 @@ enum FgoRequestState {
     HostInFlight,
 }
 
+#[derive(Clone, Copy)]
+enum CgoCmd {
+    Start,
+    Query,
+}
+
 // CGO scheduling is cycle/batch based because the CPU runs autonomously. FGO scheduling is
 // request based: the engine admits one PE instruction or one host request, waits for completion,
 // and then gives the other source priority.
@@ -53,6 +61,8 @@ pub struct Engine {
     processor: EngineProcessor,
     host_pool: VecDeque<portal_req>,
     host_complete_queue: VecDeque<dram_req>,
+    cgo_cmd_queue: VecDeque<(CgoCmd, dram_req)>,
+    cgo_cmd_complete_queue: VecDeque<dram_req>,
     dram_port: dram_portal,
     dsim3: dramsim3_wrapper,
     scheduling_mode: EngineSchedulingMode,
@@ -105,6 +115,8 @@ impl Engine {
             dram_port,
             host_pool: VecDeque::new(),
             host_complete_queue: VecDeque::new(),
+            cgo_cmd_queue: VecDeque::new(),
+            cgo_cmd_complete_queue: VecDeque::new(),
             dsim3,
             scheduling_mode: EngineSchedulingMode::Unconfigured,
             mode: EngineMode::PIM,
@@ -493,14 +505,26 @@ impl Engine {
      */
     pub fn host_push_req(&mut self, req: portal_req) {
         match req {
-            // If request is from host and it's PE instruction
-            portal_req::HOST_REQ { req } if is_pe_request(req.get_addr()) => {
-                let instruction = decode_pe_inst(req.get_addr(), req.get_payload())
-                    .unwrap_or_else(|err| panic!("cannot decode PE request: {err}"));
-                match &mut self.processor {
-                    EngineProcessor::FGO(pe) => pe.push_host_req(req, instruction),
-                    EngineProcessor::CGO(_) => {
-                        panic!("cannot route a PE instruction to a CGO/CPU engine")
+            portal_req::HOST_REQ { req } if is_pim_cmd_request(req.get_addr()) => {
+                let cmd = decode_pim_cmd(req.get_addr(), req.get_payload())
+                    .unwrap_or_else(|err| panic!("cannot decode PIM command request: {err}"));
+                validate_pim_cmd_access(cmd, !req.is_read())
+                    .unwrap_or_else(|err| panic!("cannot accept PIM command request: {err}"));
+                match (&mut self.processor, cmd) {
+                    (EngineProcessor::FGO(pe), pim_cmd::Fgo(instruction)) => {
+                        pe.push_host_req(req, instruction)
+                    }
+                    (EngineProcessor::CGO(_), pim_cmd::CgoStart) => {
+                        self.cgo_cmd_queue.push_back((CgoCmd::Start, req));
+                    }
+                    (EngineProcessor::CGO(_), pim_cmd::CgoQuery) => {
+                        self.cgo_cmd_queue.push_back((CgoCmd::Query, req));
+                    }
+                    (EngineProcessor::FGO(_), pim_cmd::CgoStart | pim_cmd::CgoQuery) => {
+                        panic!("cannot route a CGO command to an FGO/PE engine")
+                    }
+                    (EngineProcessor::CGO(_), pim_cmd::Fgo(_)) => {
+                        panic!("cannot route an FGO command to a CGO/CPU engine")
                     }
                 }
             }
@@ -519,12 +543,52 @@ impl Engine {
     }
 
     pub fn canAccept(&mut self, addr: u64, is_write: bool) -> bool {
-        if is_pe_request(addr) {
-            // The public canAccept contract has no payload. Address can select
-            // the PE route here; payload validity is checked during enqueue.
-            return matches!(self.processor, EngineProcessor::FGO(_));
+        if is_pim_cmd_request(addr) {
+            let Ok(cmd) = decode_pim_cmd(addr, &[0; 8]) else {
+                return false;
+            };
+            return self.accepts_host_pim_cmd(cmd, is_write);
         }
         self.dsim3.WillAcceptTransaction(addr, is_write)
+    }
+
+    pub(crate) fn accepts_host_pim_cmd(&self, cmd: pim_cmd, is_write: bool) -> bool {
+        if validate_pim_cmd_access(cmd, is_write).is_err() {
+            return false;
+        }
+
+        matches!(
+            (&self.processor, cmd),
+            (EngineProcessor::FGO(_), pim_cmd::Fgo(_))
+                | (
+                    EngineProcessor::CGO(_),
+                    pim_cmd::CgoStart | pim_cmd::CgoQuery
+                )
+        )
+    }
+
+    fn process_cgo_cmds(&mut self) {
+        if !matches!(self.processor, EngineProcessor::CGO(_)) {
+            return;
+        }
+
+        while let Some((cmd, mut req)) = self.cgo_cmd_queue.pop_front() {
+            let cpu = match &mut self.processor {
+                EngineProcessor::CGO(cpu) => cpu,
+                EngineProcessor::FGO(_) => unreachable!(),
+            };
+
+            match cmd {
+                CgoCmd::Start => {
+                    cpu.start();
+                }
+                CgoCmd::Query => {
+                    req.set_payload_word0(cpu.is_finished() as u64);
+                }
+            }
+
+            self.cgo_cmd_complete_queue.push_back(req);
+        }
     }
 
     fn drain_current_port_to_dram(&mut self) {
@@ -554,6 +618,10 @@ impl Engine {
     }
 
     fn drain_host_completions(&mut self) {
+        while let Some(req) = self.cgo_cmd_complete_queue.pop_front() {
+            self.host_complete_queue.push_back(req);
+        }
+
         if let EngineProcessor::FGO(pe) = &mut self.processor {
             while pe.has_complete() {
                 self.host_complete_queue.push_back(
@@ -583,7 +651,8 @@ impl Engine {
             }
             EngineSchedulingMode::CGO_only | EngineSchedulingMode::Host_CGO_share => {
                 match &mut self.processor {
-                    EngineProcessor::CGO(cpu) => cpu.tick(),
+                    EngineProcessor::CGO(cpu) if cpu.is_started() => cpu.tick(),
+                    EngineProcessor::CGO(_) => {}
                     EngineProcessor::FGO(_) => unreachable!(),
                 }
             }
@@ -599,6 +668,7 @@ impl Engine {
             }
             EngineSchedulingMode::HostOnly => {}
         }
+        self.process_cgo_cmds();
         self.drain_current_port_to_dram();
 
         for req in self.dsim3.ClockTick() {

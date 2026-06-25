@@ -46,7 +46,7 @@ use crate::memory::dramsim3_wrapper::dramsim3_wrapper;
 use crate::memory::mem_portal::{cacheline_payload, dram_req, portal_req};
 use crate::sim_engine::engine::Engine;
 use crate::sim_engine::engine::EngineSchedulingMode;
-use crate::sim_engine::request_router::{is_pe_request, routing_addr};
+use crate::sim_engine::request_router::{decode_pim_cmd, is_pim_cmd_request, routing_addr};
 use std::collections::HashMap;
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
@@ -121,15 +121,25 @@ impl Sim {
     }
 
     pub fn canAccept(&mut self, addr: u64, is_write: bool) -> bool {
-        if is_pe_request(addr) {
+        if is_pim_cmd_request(addr) {
             if !matches!(self.sim_mode, SimMode::Pim) {
                 return false;
             }
 
-            return self
-                .get_engine_cfg(addr)
-                .and_then(|cfg| self.engines.get_mut(&cfg))
-                .is_some_and(|engine| engine.canAccept(addr, is_write));
+            let Ok(cmd) = decode_pim_cmd(addr, &[0; 8]) else {
+                return false;
+            };
+            let mut has_target = false;
+            for engine in self.engines.values_mut() {
+                if engine.accepts_host_pim_cmd(cmd, is_write) {
+                    has_target = true;
+                    if !engine.canAccept(addr, is_write) {
+                        return false;
+                    }
+                }
+            }
+
+            return has_target;
         }
 
         if let Some(cfg) = self.get_engine_cfg(addr) {
@@ -161,7 +171,7 @@ impl Sim {
             ba: addr_bulk.bank,
         };
 
-        if is_pe_request(addr) && self.engines.contains_key(&fgo_cfg) {
+        if is_pim_cmd_request(addr) && self.engines.contains_key(&fgo_cfg) {
             Some(fgo_cfg)
         } else if self.engines.contains_key(&cgo_cfg) {
             Some(cgo_cfg)
@@ -179,26 +189,31 @@ impl Sim {
     pub fn enqueue_with_data(&mut self, addr: u64, payload: cacheline_payload, is_write: bool) {
         let req = dram_req::new_with_payload(addr, payload, !is_write, false);
 
-        if is_pe_request(addr) {
+        if is_pim_cmd_request(addr) {
             if !matches!(self.sim_mode, SimMode::Pim) {
-                panic!("cannot enqueue a PE instruction while Sim is in host mode");
+                panic!("cannot enqueue a PIM command while Sim is in host mode");
             }
 
             let mut req = req;
             req.set_id(self.dsim3.get_req_id());
             req.set_issue_time(self.dsim3.get_clock_tick() as u64);
 
-            let cfg = self
-                .get_engine_cfg(addr)
-                .expect("PE instruction address does not target a configured engine");
-            let engine = self
-                .engines
-                .get_mut(&cfg)
-                .expect("Cannot detect available engine");
-            if !engine.canAccept(addr, is_write) {
-                panic!("PE instruction address does not target a compatible FGO/PE engine");
+            let cmd = decode_pim_cmd(addr, &payload)
+                .unwrap_or_else(|err| panic!("cannot decode PIM command request: {err}"));
+            let mut pushed = false;
+            for engine in self.engines.values_mut() {
+                if engine.accepts_host_pim_cmd(cmd, is_write) {
+                    if !engine.canAccept(addr, is_write) {
+                        panic!("PIM command target engine cannot accept the request");
+                    }
+                    engine.host_push_req(portal_req::HOST_REQ { req: req.clone() });
+                    pushed = true;
+                }
             }
-            engine.host_push_req(portal_req::HOST_REQ { req });
+
+            if !pushed {
+                panic!("PIM command address does not target any compatible engine");
+            }
             return;
         }
 

@@ -59,6 +59,10 @@ impl dram_req {
         &self.payload
     }
 
+    pub(crate) fn set_payload_word0(&mut self, value: u64) {
+        self.payload[0] = value;
+    }
+
     pub fn get_id(&self) -> Option<u64> {
         self.id
     }

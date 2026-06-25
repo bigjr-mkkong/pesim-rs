@@ -2,7 +2,8 @@ use crate::PE::types::inst as pe_inst;
 use crate::cpu::pimcpu_types::{fatptr_rf, inst};
 use crate::memory::mem_portal::dram_req;
 use crate::sim_engine::engine::{Engine, EngineSchedulingMode};
-use crate::sim_engine::request_router_test::encode_pe_inst;
+use crate::sim_engine::request_router::pim_cmd;
+use crate::sim_engine::request_router_test::{encode_fgo_cmd, encode_pim_cmd};
 use crate::sim_engine::sim::{Sim, SimMode, engine_cfg};
 
 impl Sim {
@@ -131,7 +132,7 @@ impl HostDriverRequest {
         Self {
             addr,
             payload,
-            is_write: false,
+            is_write: true,
         }
     }
 }
@@ -266,6 +267,7 @@ fn assert_completed_requests_match(completions: &[(dram_req, u64)], expected: &[
 
 fn configure_vecadd(engine: &mut Engine, lhs: u32, rhs: u32) {
     let cpu = engine.get_cpu();
+    cpu.start();
 
     cpu.get_agu().insert(0, 0, 16);
     cpu.get_RF().write_fregs(0, fatptr_rf::new(0, 0));
@@ -297,6 +299,7 @@ fn assert_vecadd_result(engine: &mut Engine, expected: u32) {
 
 fn configure_complex_cgo_program(engine: &mut Engine) {
     let cpu = engine.get_cpu();
+    cpu.start();
 
     cpu.get_agu().insert(0, 0, 16);
     cpu.get_RF().write_fregs(0, fatptr_rf::new(0, 0));
@@ -544,16 +547,13 @@ fn sim_routes_encoded_request_to_pe_and_returns_dram_req_completion() {
         .get_Arf()
         .write_vRF(2, [8; 8]);
 
-    let (addr, payload) = encode_pe_inst(
-        pe_inst::ADD128 {
-            vRD: 3,
-            vRS0: 1,
-            vRS1: 2,
-        },
-        0,
-    );
-    assert!(sim.canAccept(addr, false));
-    sim.enqueue_with_data(addr, payload, false);
+    let (addr, payload) = encode_fgo_cmd(pe_inst::ADD128 {
+        vRD: 3,
+        vRS0: 1,
+        vRS1: 2,
+    });
+    assert!(sim.canAccept(addr, true));
+    sim.enqueue_with_data(addr, payload, true);
 
     let completions = drain_until_completions(&mut sim, 1);
     assert_eq!(completions[0].0.get_addr(), addr);
@@ -566,12 +566,135 @@ fn sim_routes_encoded_request_to_pe_and_returns_dram_req_completion() {
 }
 
 #[test]
+fn sim_broadcasts_encoded_request_to_all_fgo_engines() {
+    let mut sim = Sim::new();
+    sim.set_mode_for_test(SimMode::Pim);
+    let first_cfg = engine_cfg::FGO {
+        ch: 0,
+        ra: 0,
+        bg: 0,
+        ba: 0,
+    };
+    let second_cfg = engine_cfg::FGO {
+        ch: 0,
+        ra: 0,
+        bg: 0,
+        ba: 1,
+    };
+    let cgo_cfg = engine_cfg::CGO {
+        ch: 0,
+        ra: 0,
+        bg: 0,
+        ba: 2,
+    };
+
+    sim.add_engine_with_scheduling_for_test(first_cfg, EngineSchedulingMode::Host_FGO_share);
+    sim.add_engine_with_scheduling_for_test(second_cfg, EngineSchedulingMode::Host_FGO_share);
+    sim.add_engine_with_scheduling_for_test(cgo_cfg, EngineSchedulingMode::Host_CGO_share);
+
+    for cfg in [first_cfg, second_cfg] {
+        let pe = sim.engine_mut_for_test(cfg).get_pe();
+        pe.get_Arf().write_vRF(1, [2; 8]);
+        pe.get_Arf().write_vRF(2, [5; 8]);
+    }
+
+    let (addr, payload) = encode_fgo_cmd(pe_inst::ADD128 {
+        vRD: 3,
+        vRS0: 1,
+        vRS1: 2,
+    });
+    assert!(sim.canAccept(addr, true));
+    sim.enqueue_with_data(addr, payload, true);
+
+    let completions = drain_until_completions(&mut sim, 2);
+    assert_eq!(completions.len(), 2);
+    assert!(completions.iter().all(|(req, _)| req.get_addr() == addr));
+    assert_eq!(
+        sim.engine_mut_for_test(first_cfg)
+            .get_pe()
+            .get_Arf()
+            .read_vRF(3),
+        [7; 8]
+    );
+    assert_eq!(
+        sim.engine_mut_for_test(second_cfg)
+            .get_pe()
+            .get_Arf()
+            .read_vRF(3),
+        [7; 8]
+    );
+}
+
+#[test]
+fn sim_broadcasts_cgo_commands_only_to_cgo_engines() {
+    let mut sim = Sim::new();
+    sim.set_mode_for_test(SimMode::Pim);
+    let first_cgo = engine_cfg::CGO {
+        ch: 0,
+        ra: 0,
+        bg: 0,
+        ba: 0,
+    };
+    let second_cgo = engine_cfg::CGO {
+        ch: 0,
+        ra: 0,
+        bg: 0,
+        ba: 1,
+    };
+    let fgo_cfg = engine_cfg::FGO {
+        ch: 0,
+        ra: 0,
+        bg: 0,
+        ba: 2,
+    };
+    sim.add_engine_with_scheduling_for_test(first_cgo, EngineSchedulingMode::CGO_only);
+    sim.add_engine_with_scheduling_for_test(second_cgo, EngineSchedulingMode::CGO_only);
+    sim.add_engine_with_scheduling_for_test(fgo_cfg, EngineSchedulingMode::Host_FGO_share);
+
+    let (start_addr, start_payload) = encode_pim_cmd(pim_cmd::CgoStart);
+    assert!(sim.canAccept(start_addr, true));
+    assert!(!sim.canAccept(start_addr, false));
+    sim.enqueue_with_data(start_addr, start_payload, true);
+
+    sim.tick();
+    let mut completions = Vec::new();
+    while sim.hasComplete() {
+        completions.push(sim.getComplete().unwrap());
+    }
+    assert_eq!(completions.len(), 2);
+    assert!(
+        completions
+            .iter()
+            .all(|req| req.get_addr() == start_addr && !req.is_read())
+    );
+    assert!(sim.engine_mut_for_test(first_cgo).get_cpu().is_started());
+    assert!(sim.engine_mut_for_test(second_cgo).get_cpu().is_started());
+
+    let (query_addr, query_payload) = encode_pim_cmd(pim_cmd::CgoQuery);
+    assert!(sim.canAccept(query_addr, false));
+    assert!(!sim.canAccept(query_addr, true));
+    sim.enqueue_with_data(query_addr, query_payload, false);
+
+    sim.tick();
+    let mut completions = Vec::new();
+    while sim.hasComplete() {
+        completions.push(sim.getComplete().unwrap());
+    }
+    assert_eq!(completions.len(), 2);
+    assert!(
+        completions
+            .iter()
+            .all(|req| req.get_addr() == query_addr && req.is_read() && req.get_payload()[0] == 0)
+    );
+}
+
+#[test]
 fn sim_rejects_encoded_request_without_fgo_engine() {
     let mut sim = Sim::new();
     sim.set_mode_for_test(SimMode::Pim);
-    let (addr, _) = encode_pe_inst(pe_inst::NOP, 0);
+    let (addr, _) = encode_fgo_cmd(pe_inst::NOP);
 
-    assert!(!sim.canAccept(addr, false));
+    assert!(!sim.canAccept(addr, true));
 }
 
 #[test]
@@ -675,7 +798,7 @@ fn sim_FGO_host_together() {
     let mut requests = Vec::with_capacity(pe_instructions.len() * 3);
 
     for (idx, instruction) in pe_instructions.into_iter().enumerate() {
-        let (addr, payload) = encode_pe_inst(instruction, inside[idx]);
+        let (addr, payload) = encode_fgo_cmd(instruction);
         requests.push(HostDriverRequest::pe(addr, payload));
         requests.push(HostDriverRequest::memory(inside[idx], idx % 2 == 0));
         requests.push(HostDriverRequest::memory(outside[idx], idx % 2 != 0));

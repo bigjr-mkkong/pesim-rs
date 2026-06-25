@@ -37,6 +37,8 @@ pub struct CPU {
     resume_ready_delay_cycles: u64,
     ext_signal_delay_remaining: u64,
     pause_ready_delay_started: bool,
+    started: bool,
+    finished: bool,
 }
 
 impl CPU {
@@ -73,6 +75,8 @@ impl CPU {
             resume_ready_delay_cycles: 0,
             ext_signal_delay_remaining: 0,
             pause_ready_delay_started: false,
+            started: false,
+            finished: false,
         }
     }
 
@@ -126,6 +130,18 @@ impl CPU {
         self.ready4ext_sig
     }
 
+    pub fn start(&mut self) {
+        self.started = true;
+    }
+
+    pub fn is_started(&self) -> bool {
+        self.started
+    }
+
+    pub fn is_finished(&self) -> bool {
+        self.finished
+    }
+
     // Internal pause-resume delay timing simulation
     fn update_extsig_rdy(&mut self, winner_reason: Option<signal_reason>) {
         if self.ext_signal_delay_remaining > 0 {
@@ -156,7 +172,7 @@ impl CPU {
         }
     }
 
-    fn maybe_pause_stage_result(
+    fn check_ext_pause(
         &self,
         sig_req: signal_req,
         arch_ops: Vec<arch_action>,
@@ -188,26 +204,26 @@ impl CPU {
 
         let (agu_mem_next, agu_sigreq, agu_archop) = self.eval_AGU(&self.ex_agu_rf, &self.agu);
         let (agu_sigreq, agu_archop) =
-            self.maybe_pause_stage_result(agu_sigreq, agu_archop, CPU_stages::AGU);
+            self.check_ext_pause(agu_sigreq, agu_archop, CPU_stages::AGU);
         self.pipeline_ctrl.submit_signal(Some(agu_sigreq));
 
         let (ex_agu_next, ex_sigreq, ex_archop) = self.eval_EX(&self.id_ex_rf);
-        let (ex_sigreq, ex_archop) =
-            self.maybe_pause_stage_result(ex_sigreq, ex_archop, CPU_stages::EX);
+        let (ex_sigreq, ex_archop) = self.check_ext_pause(ex_sigreq, ex_archop, CPU_stages::EX);
         self.pipeline_ctrl.submit_signal(Some(ex_sigreq));
 
         let (id_ex_next, id_sigreq, id_archop) = self.eval_ID(&self.if_id_rf, &self.RF);
-        let (id_sigreq, id_archop) =
-            self.maybe_pause_stage_result(id_sigreq, id_archop, CPU_stages::ID);
+        let (id_sigreq, id_archop) = self.check_ext_pause(id_sigreq, id_archop, CPU_stages::ID);
         self.pipeline_ctrl.submit_signal(Some(id_sigreq));
 
         let (if_id_next, if_sigreq, if_archop) = self.eval_IF(&self.RF, &self.imem);
-        let (if_sigreq, if_archop) =
-            self.maybe_pause_stage_result(if_sigreq, if_archop, CPU_stages::IF);
+        let (if_sigreq, if_archop) = self.check_ext_pause(if_sigreq, if_archop, CPU_stages::IF);
         self.pipeline_ctrl.submit_signal(Some(if_sigreq));
 
         let pipeline_op = self.pipeline_ctrl.get_decision();
         let winner_reason = self.pipeline_ctrl.last_winner_reason();
+        if winner_reason == Some(signal_reason::prog_end) {
+            self.finished = true;
+        }
 
         // This function will update self.ready4sig() according to defined delay cycle
         // It introduced a fixed cycle delay after MEM has finished.

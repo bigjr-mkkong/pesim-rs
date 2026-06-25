@@ -5,13 +5,16 @@
 use cpu::pipeline::CPU;
 use std::path::PathBuf;
 
-/*
- * TODO
- * Remember to change it back to path used in testing if running test
- */
+#[cfg(not(test))]
 pub const DSIM3_CFG_PATH: &str = "/gem5/ext/pesim/pesim-rs/cfg/DDR4_8Gb_x4_2400_pim.ini";
+#[cfg(test)]
+pub const DSIM3_CFG_PATH: &str =
+    "/home/michael/Projects/pimtlb/gem5/ext/pesim/pesim-rs/cfg/DDR4_8Gb_x4_2400_pim.ini";
 
+#[cfg(not(test))]
 pub const DSIM3_OUT_DIR: &str = "/gem5/ext/pesim/pesim-rs/output";
+#[cfg(test)]
+pub const DSIM3_OUT_DIR: &str = "/home/michael/Projects/pimtlb/gem5/ext/pesim/pesim-rs/output";
 
 fn dsim3_paths() -> (PathBuf, PathBuf) {
     let config_path = PathBuf::from(DSIM3_CFG_PATH);
@@ -254,6 +257,8 @@ pub extern "C" fn pesim_get_complete(sim: *mut PESim_body) -> PEsim_rs_MemReq {
         };
 
         body.completions_returned += 1;
+        // TODO: expose completion payload through the FFI result. OP_CGO_QUERY writes
+        // its 0/1 result into dram_req.payload[0], but PEsim_rs_MemReq cannot return it yet.
         PEsim_rs_MemReq {
             addr: req.get_addr(),
             issue_time: req.get_issue_time().unwrap_or(0),
