@@ -85,12 +85,18 @@ impl PE {
         finished
     }
 
-    fn fetch_inst(&mut self) -> Option<(inst, Option<dram_req>)> {
+    fn peek_fetch_inst(&self) -> Option<(inst, Option<dram_req>)> {
         if self.fetch_next_allowed {
-            self.fetch_next_allowed = false;
-            self.imem.pop_front()
+            self.imem.front().cloned()
         } else {
             None
+        }
+    }
+
+    fn consume_fetch_inst(&mut self) {
+        if self.fetch_next_allowed {
+            self.fetch_next_allowed = false;
+            self.imem.pop_front();
         }
     }
 
@@ -103,8 +109,8 @@ impl PE {
     }
 
     pub fn tick(&mut self) {
-        let issue_ex_snapshot = self.issue_ex_rf.clone();
-        let (ex_wb_next, ex_sigreq, ex_archop) = self.eval_EX(&issue_ex_snapshot, &self.fmem);
+        let issue_ex_next = Self::eval_ISSUE(self.peek_fetch_inst(), &self.Arf);
+        let (ex_wb_next, ex_sigreq, ex_archop) = self.eval_EX(&self.issue_ex_rf, &self.fmem);
 
         let pipeline_op = self.mem_stop_fsm.get_decision(ex_sigreq);
         let stage_action = |stage| {
@@ -114,18 +120,24 @@ impl PE {
                 .unwrap_or(pipeline_action::Normal)
         };
 
+        let mut arch_ops = Vec::new();
         if stage_action(PE_stages::EX) == pipeline_action::Normal {
-            self.arch_update(ex_archop);
-            if issue_ex_snapshot.is_valid() {
-                self.finished = true;
-                if let Some(req) = issue_ex_snapshot.get_sim_req() {
-                    self.completed_reqs.push_back(req);
-                }
-            }
+            arch_ops.extend(ex_archop);
         }
+        self.arch_update(arch_ops);
 
-        if stage_action(PE_stages::EX) == pipeline_action::Normal && ex_wb_next.is_valid() {
-            self.ex_wb_forward_rf = ex_wb_next;
+        if stage_action(PE_stages::EX) == pipeline_action::Normal {
+            if self.issue_ex_rf.is_valid() {
+                self.finished = true;
+            }
+
+            if let Some(req) = self.issue_ex_rf.get_sim_req() {
+                self.completed_reqs.push_back(req);
+            }
+
+            if ex_wb_next.is_valid() {
+                self.ex_wb_forward_rf = ex_wb_next;
+            }
         }
 
         let stage_op = |producer_act, consumer_act| match (producer_act, consumer_act) {
@@ -138,8 +150,8 @@ impl PE {
 
         match stage_op(stage_action(PE_stages::ISSUE), stage_action(PE_stages::EX)) {
             pipeline_action::Normal => {
-                let issue_input = self.fetch_inst();
-                self.issue_ex_rf = Self::eval_ISSUE(issue_input, &self.Arf);
+                self.consume_fetch_inst();
+                self.issue_ex_rf = issue_ex_next;
             }
             pipeline_action::Stall => {}
             pipeline_action::Flush | pipeline_action::END => self.issue_ex_rf = ISSUE_EX_RF::new(),

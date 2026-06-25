@@ -1,5 +1,6 @@
 use crate::PE::pe_top::PE;
 use crate::PE::types::inst;
+use crate::memory::mem_portal::{dram_portal, dram_req};
 
 fn seed_vrf(pe: &mut PE, reg: u8, value: [i16; 8]) {
     pe.get_Arf().write_vRF(reg, value);
@@ -329,6 +330,51 @@ fn PE_has_finished_tracks_memory_arch_update_test() {
     }
 
     panic!("memory instruction did not complete within 128 cycles");
+}
+
+#[test]
+fn PE_stalled_ex_keeps_issue_latch_and_buffered_next_instruction() {
+    let mut portal = dram_portal::new();
+    let mut pe = PE::new_with_dram_port(portal.clone());
+    seed_mem_s(&mut pe, 0x300, 2468);
+    seed_vrf(&mut pe, 1, [3; 8]);
+    seed_vrf(&mut pe, 2, [4; 8]);
+
+    pe.push_host_inst(inst::LD32 {
+        sRD: 7,
+        addr: 0x300,
+    });
+    pe.push_host_inst(inst::ADD128 {
+        vRD: 3,
+        vRS0: 1,
+        vRS1: 2,
+    });
+
+    pe.allow_next();
+    pe.tick();
+    pe.tick();
+
+    pe.allow_next();
+    for _ in 0..8 {
+        pe.tick();
+        assert_eq!(read_srf(&mut pe, 7), 0);
+        assert_eq!(read_vrf(&mut pe, 3), [0; 8]);
+        assert!(pe.has_buffered_inst());
+        assert!(!pe.has_finished());
+    }
+
+    portal.complete(dram_req::new(0x300, true, true));
+
+    for _ in 0..128 {
+        pe.tick();
+        if read_vrf(&mut pe, 3) == [7; 8] {
+            assert_eq!(read_srf(&mut pe, 7), 2468);
+            assert!(!pe.has_buffered_inst());
+            return;
+        }
+    }
+
+    panic!("stalled PE instruction did not preserve the following buffered instruction");
 }
 
 #[test]
