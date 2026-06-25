@@ -43,7 +43,7 @@
 
 use crate::dsim3_paths;
 use crate::memory::dramsim3_wrapper::dramsim3_wrapper;
-use crate::memory::mem_portal::{cacheline_payload, dram_req, portal_req};
+use crate::memory::mem_portal::{cacheline_payload, dram_req};
 use crate::sim_engine::engine::Engine;
 use crate::sim_engine::engine::EngineSchedulingMode;
 use crate::sim_engine::request_router::{decode_pim_cmd, is_pim_cmd_request, routing_addr};
@@ -131,7 +131,7 @@ impl Sim {
             };
             let mut has_target = false;
             for engine in self.engines.values_mut() {
-                if engine.accepts_host_pim_cmd(cmd, is_write) {
+                if engine.can_accept_pim_cmd(cmd, is_write) {
                     has_target = true;
                     if !engine.canAccept(addr, is_write) {
                         return false;
@@ -202,11 +202,11 @@ impl Sim {
                 .unwrap_or_else(|err| panic!("cannot decode PIM command request: {err}"));
             let mut pushed = false;
             for engine in self.engines.values_mut() {
-                if engine.accepts_host_pim_cmd(cmd, is_write) {
+                if engine.can_accept_pim_cmd(cmd, is_write) {
                     if !engine.canAccept(addr, is_write) {
                         panic!("PIM command target engine cannot accept the request");
                     }
-                    engine.host_push_req(portal_req::HOST_REQ { req: req.clone() });
+                    engine.enqueue_host_pim_request(req.clone(), cmd);
                     pushed = true;
                 }
             }
@@ -224,7 +224,7 @@ impl Sim {
                 self.engines
                     .get_mut(&cfg)
                     .expect("Cannot detect available engine")
-                    .host_push_req(portal_req::HOST_REQ { req: req.clone() });
+                    .enqueue_host_mem_request(req.clone());
             }
         }
 

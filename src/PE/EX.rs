@@ -10,7 +10,7 @@ use crate::PE::pe_top::PE;
 use crate::PE::types::{ALUop, MEMop, PE_stages, WBop, arch_action};
 use crate::cpu::signal_scoreboard::{pipeline_action, signal_reason};
 use crate::memory::flat_memory::pe_flat_mem;
-use crate::memory::mem_portal::{dram_portal, dram_req, portal_req};
+use crate::memory::mem_portal::{dram_portal, dram_req};
 use std::collections::HashMap;
 
 #[derive(Clone, Copy)]
@@ -281,7 +281,7 @@ impl PE_MEM_stop_FSM {
                     self.req = Some(req.clone());
 
                     if let Some(dram_port) = &mut self.dram_port {
-                        dram_port.submit(portal_req::PIM_REQ { req });
+                        dram_port.submit(req);
                         PE_MEM_stop_FSM_states::Stall
                     } else {
                         PE_MEM_stop_FSM_states::WriteBack

@@ -5,7 +5,7 @@ use crate::cpu::signal_scoreboard::{SigFSM, pipeline_action, signal_reason, sign
 use std::collections::{HashMap, HashSet};
 
 use crate::memory::flat_memory::cpu_flat_mem;
-use crate::memory::mem_portal::{dram_portal, dram_req, portal_req};
+use crate::memory::mem_portal::{dram_portal, dram_req};
 
 #[derive(Clone, Copy)]
 pub struct MEM_WB_RF {
@@ -316,7 +316,7 @@ impl SigFSM for MEM_stop_FSM {
                     self.req = Some(req.clone());
 
                     if let Some(dram_port) = &mut self.dram_port {
-                        dram_port.submit(portal_req::PIM_REQ { req });
+                        dram_port.submit(req);
                         MEM_stop_FSM_states::Stall
                     } else {
                         MEM_stop_FSM_states::WriteBack

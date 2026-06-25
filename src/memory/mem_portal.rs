@@ -1,4 +1,3 @@
-use crate::CPU;
 use std::cell::RefCell;
 use std::rc::Rc;
 
@@ -94,11 +93,6 @@ impl dram_req {
     }
 }
 
-pub enum portal_req {
-    PIM_REQ { req: dram_req },
-    HOST_REQ { req: dram_req },
-}
-
 #[derive(Clone, Copy)]
 pub enum portal_mode {
     PIM,
@@ -158,14 +152,11 @@ impl dram_portal {
         }
     }
 
-    pub fn submit(&mut self, req: portal_req) {
-        match req {
-            portal_req::PIM_REQ { req } => {
-                self.simcpu_req.borrow_mut().push(req);
-            }
-            portal_req::HOST_REQ { req } => {
-                self.host_req.borrow_mut().push(req);
-            }
+    pub fn submit(&mut self, req: dram_req) {
+        if req.is_pim() {
+            self.simcpu_req.borrow_mut().push(req);
+        } else {
+            self.host_req.borrow_mut().push(req);
         }
     }
 

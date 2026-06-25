@@ -2,7 +2,7 @@ use crate::CPU;
 use crate::PE::pe_top::PE;
 use crate::dsim3_paths;
 use crate::memory::dramsim3_wrapper::dramsim3_wrapper;
-use crate::memory::mem_portal::{dram_portal, dram_req, portal_mode, portal_req};
+use crate::memory::mem_portal::{dram_portal, dram_req, portal_mode};
 use crate::sim_engine::request_router::{
     decode_pim_cmd, is_pim_cmd_request, pim_cmd, validate_pim_cmd_access,
 };
@@ -59,7 +59,7 @@ enum CgoCmd {
 
 pub struct Engine {
     processor: EngineProcessor,
-    host_pool: VecDeque<portal_req>,
+    host_pool: VecDeque<dram_req>,
     host_complete_queue: VecDeque<dram_req>,
     cgo_cmd_queue: VecDeque<(CgoCmd, dram_req)>,
     cgo_cmd_complete_queue: VecDeque<dram_req>,
@@ -500,45 +500,34 @@ impl Engine {
         }
     }
 
-    /*
-     * This is the function used by Host to send request
-     */
-    pub fn host_push_req(&mut self, req: portal_req) {
-        match req {
-            portal_req::HOST_REQ { req } if is_pim_cmd_request(req.get_addr()) => {
-                let cmd = decode_pim_cmd(req.get_addr(), req.get_payload())
-                    .unwrap_or_else(|err| panic!("cannot decode PIM command request: {err}"));
-                validate_pim_cmd_access(cmd, !req.is_read())
-                    .unwrap_or_else(|err| panic!("cannot accept PIM command request: {err}"));
-                match (&mut self.processor, cmd) {
-                    (EngineProcessor::FGO(pe), pim_cmd::Fgo(instruction)) => {
-                        pe.push_host_req(req, instruction)
-                    }
-                    (EngineProcessor::CGO(_), pim_cmd::CgoStart) => {
-                        self.cgo_cmd_queue.push_back((CgoCmd::Start, req));
-                    }
-                    (EngineProcessor::CGO(_), pim_cmd::CgoQuery) => {
-                        self.cgo_cmd_queue.push_back((CgoCmd::Query, req));
-                    }
-                    (EngineProcessor::FGO(_), pim_cmd::CgoStart | pim_cmd::CgoQuery) => {
-                        panic!("cannot route a CGO command to an FGO/PE engine")
-                    }
-                    (EngineProcessor::CGO(_), pim_cmd::Fgo(_)) => {
-                        panic!("cannot route an FGO command to a CGO/CPU engine")
-                    }
-                }
-            }
+    pub fn enqueue_host_mem_request(&mut self, req: dram_req) {
+        if req.is_pim() || is_pim_cmd_request(req.get_addr()) {
+            panic!("host memory request must be a non-PIM memory access");
+        }
+        self.host_pool.push_back(req);
+    }
 
-            //If request is from host but it's a regular DRAM access
-            portal_req::HOST_REQ { req } => {
-                self.host_pool.push_back(portal_req::HOST_REQ { req });
+    pub fn enqueue_host_pim_request(&mut self, req: dram_req, cmd: pim_cmd) {
+        if req.is_pim() || !is_pim_cmd_request(req.get_addr()) {
+            panic!("host PIM request must be a host request in the PIM command page");
+        }
+        validate_pim_cmd_access(cmd, !req.is_read())
+            .unwrap_or_else(|err| panic!("cannot accept PIM command request: {err}"));
+        if !self.can_accept_pim_cmd(cmd, !req.is_read()) {
+            panic!("cannot route PIM command to this engine");
+        }
+
+        match (&mut self.processor, cmd) {
+            (EngineProcessor::FGO(pe), pim_cmd::Fgo(instruction)) => {
+                pe.push_host_req(req, instruction)
             }
-            _ => {
-                eprintln!("Host cannot push PIM request");
-                unreachable!()
-            } // portal_req::PIM_REQ { req } => {
-              //     self.host_pool.push_back(portal_req::PIM_REQ { req });
-              // }
+            (EngineProcessor::CGO(_), pim_cmd::CgoStart) => {
+                self.cgo_cmd_queue.push_back((CgoCmd::Start, req));
+            }
+            (EngineProcessor::CGO(_), pim_cmd::CgoQuery) => {
+                self.cgo_cmd_queue.push_back((CgoCmd::Query, req));
+            }
+            _ => unreachable!("PIM command compatibility was checked before enqueue"),
         }
     }
 
@@ -547,12 +536,12 @@ impl Engine {
             let Ok(cmd) = decode_pim_cmd(addr, &[0; 8]) else {
                 return false;
             };
-            return self.accepts_host_pim_cmd(cmd, is_write);
+            return self.can_accept_pim_cmd(cmd, is_write);
         }
         self.dsim3.WillAcceptTransaction(addr, is_write)
     }
 
-    pub(crate) fn accepts_host_pim_cmd(&self, cmd: pim_cmd, is_write: bool) -> bool {
+    pub(crate) fn can_accept_pim_cmd(&self, cmd: pim_cmd, is_write: bool) -> bool {
         if validate_pim_cmd_access(cmd, is_write).is_err() {
             return false;
         }
@@ -597,7 +586,6 @@ impl Engine {
                 break;
             };
 
-            let is_pim = req.is_pim();
             let is_write = !req.is_read();
             let addr = req.get_addr();
 
@@ -606,12 +594,7 @@ impl Engine {
                 req.set_issue_time(self.clock_cycle);
                 self.dsim3.AddTransactionReq(req);
             } else {
-                if is_pim {
-                    self.dram_port.submit(portal_req::PIM_REQ { req });
-                } else {
-                    self.dram_port.submit(portal_req::HOST_REQ { req });
-                }
-
+                self.dram_port.submit(req);
                 break;
             }
         }
