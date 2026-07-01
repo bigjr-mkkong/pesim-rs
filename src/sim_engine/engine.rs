@@ -3,9 +3,7 @@ use crate::PE::pe_top::PE;
 use crate::dsim3_paths;
 use crate::memory::dramsim3_wrapper::dramsim3_wrapper;
 use crate::memory::mem_portal::{dram_portal, dram_req, portal_mode};
-use crate::sim_engine::request_router::{
-    decode_pim_cmd, is_pim_cmd_request, pim_cmd, validate_pim_cmd_access,
-};
+use crate::sim_engine::request_router::{pim_cmd, validate_pim_cmd_access};
 use std::collections::VecDeque;
 #[cfg(test)]
 use std::sync::atomic::{AtomicU8, Ordering};
@@ -53,6 +51,13 @@ enum CgoCmd {
     Query,
 }
 
+#[derive(Clone, Copy)]
+pub(crate) struct EngineRequest {
+    pub addr: u64,
+    pub is_write: bool,
+    pub decoded_cmd: Result<Option<pim_cmd>, &'static str>,
+}
+
 // CGO scheduling is cycle/batch based because the CPU runs autonomously. FGO scheduling is
 // request based: the engine admits one PE instruction or one host request, waits for completion,
 // and then gives the other source priority.
@@ -89,22 +94,17 @@ pub struct Engine {
 
 impl Engine {
     pub fn new_cgo() -> Self {
-        Self::build(true)
+        Self::build(|dram_port| EngineProcessor::CGO(CPU::new_with_dram_port(dram_port)))
     }
 
     pub fn new_fgo() -> Self {
-        Self::build(false)
+        Self::build(|dram_port| EngineProcessor::FGO(PE::new_with_dram_port(dram_port)))
     }
 
-    fn build(is_cgo: bool) -> Self {
+    fn build(make_processor: impl FnOnce(dram_portal) -> EngineProcessor) -> Self {
         let mut dram_port = dram_portal::new();
         dram_port.set_mode(portal_mode::PIM);
-
-        let processor = if is_cgo {
-            EngineProcessor::CGO(CPU::new_with_dram_port(dram_port.clone()))
-        } else {
-            EngineProcessor::FGO(PE::new_with_dram_port(dram_port.clone()))
-        };
+        let processor = make_processor(dram_port.clone());
 
         let (cfg_path, out_dir) = dsim3_paths();
         let mut dsim3 = dramsim3_wrapper::new(cfg_path, out_dir, 0, 0, 0, 0);
@@ -179,22 +179,20 @@ impl Engine {
         Ok(())
     }
 
-    pub fn get_cpu(&mut self) -> &mut CPU {
+    #[cfg(test)]
+    pub(crate) fn get_cpu(&mut self) -> &mut CPU {
         match &mut self.processor {
             EngineProcessor::CGO(cpu) => cpu,
             EngineProcessor::FGO(_) => panic!("cannot access CPU on an FGO engine"),
         }
     }
 
-    pub fn get_pe(&mut self) -> &mut PE {
+    #[cfg(test)]
+    pub(crate) fn get_pe(&mut self) -> &mut PE {
         match &mut self.processor {
             EngineProcessor::FGO(pe) => pe,
             EngineProcessor::CGO(_) => panic!("cannot access PE on a CGO engine"),
         }
-    }
-
-    pub fn get_dram_port(&mut self) -> &mut dram_portal {
-        &mut self.dram_port
     }
 
     pub fn set_external_signal_delays(&mut self, pause_cycles: u64, resume_cycles: u64) {
@@ -353,7 +351,8 @@ impl Engine {
                     self.first_host_switch_started = true;
                     self.PIM_tick_rec = 0;
                     match &mut self.processor {
-                        EngineProcessor::CGO(cpu) => cpu.signal_pause(),
+                        EngineProcessor::CGO(cpu) if cpu.is_started() => cpu.signal_pause(),
+                        EngineProcessor::CGO(_) => {}
                         EngineProcessor::FGO(_) => unreachable!(),
                     }
                     self.switch(self.mode);
@@ -385,7 +384,8 @@ impl Engine {
                     self.PIM_tick_watermark = self.MEM_tick_rec;
                     self.MEM_tick_rec = 0;
                     match &mut self.processor {
-                        EngineProcessor::CGO(cpu) => cpu.signal_resume(),
+                        EngineProcessor::CGO(cpu) if cpu.is_started() => cpu.signal_resume(),
+                        EngineProcessor::CGO(_) => {}
                         EngineProcessor::FGO(_) => unreachable!(),
                     }
                     self.switch(self.mode);
@@ -501,14 +501,14 @@ impl Engine {
     }
 
     pub fn enqueue_host_mem_request(&mut self, req: dram_req) {
-        if req.is_pim() || is_pim_cmd_request(req.get_addr()) {
+        if req.is_pim() {
             panic!("host memory request must be a non-PIM memory access");
         }
         self.host_pool.push_back(req);
     }
 
     pub fn enqueue_host_pim_request(&mut self, req: dram_req, cmd: pim_cmd) {
-        if req.is_pim() || !is_pim_cmd_request(req.get_addr()) {
+        if req.is_pim() {
             panic!("host PIM request must be a host request in the PIM command page");
         }
         validate_pim_cmd_access(cmd, !req.is_read())
@@ -531,14 +531,14 @@ impl Engine {
         }
     }
 
-    pub fn canAccept(&mut self, addr: u64, is_write: bool) -> bool {
-        if is_pim_cmd_request(addr) {
-            let Ok(cmd) = decode_pim_cmd(addr, &[0; 8]) else {
-                return false;
-            };
-            return self.can_accept_pim_cmd(cmd, is_write);
+    pub(crate) fn canAccept(&mut self, request: EngineRequest) -> bool {
+        match request.decoded_cmd {
+            Ok(Some(cmd)) => self.can_accept_pim_cmd(cmd, request.is_write),
+            Ok(None) => self
+                .dsim3
+                .WillAcceptTransaction(request.addr, request.is_write),
+            Err(_) => false,
         }
-        self.dsim3.WillAcceptTransaction(addr, is_write)
     }
 
     pub(crate) fn can_accept_pim_cmd(&self, cmd: pim_cmd, is_write: bool) -> bool {
@@ -553,6 +553,15 @@ impl Engine {
                     EngineProcessor::CGO(_),
                     pim_cmd::CgoStart | pim_cmd::CgoQuery
                 )
+        )
+    }
+
+    pub(crate) fn accepts_host_mem_requests(&self) -> bool {
+        matches!(
+            self.scheduling_mode,
+            EngineSchedulingMode::Host_CGO_share
+                | EngineSchedulingMode::Host_FGO_share
+                | EngineSchedulingMode::HostOnly
         )
     }
 

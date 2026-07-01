@@ -27,7 +27,7 @@ pub struct PE {
 }
 
 impl PE {
-    pub fn new() -> Self {
+    fn build(mem_stop_fsm: PE_MEM_stop_FSM) -> Self {
         Self {
             imem: VecDeque::new(),
             completed_reqs: VecDeque::new(),
@@ -37,24 +37,20 @@ impl PE {
             ex_wb_forward_rf: EX_WB_RF::new(),
             Arf: arch_rf::new(),
             fmem: pe_flat_mem::new(),
-            mem_stop_fsm: PE_MEM_stop_FSM::new(),
+            mem_stop_fsm,
         }
+    }
+
+    #[cfg(test)]
+    pub fn new() -> Self {
+        Self::build(PE_MEM_stop_FSM::new())
     }
 
     pub fn new_with_dram_port(dram_port: dram_portal) -> Self {
-        Self {
-            imem: VecDeque::new(),
-            completed_reqs: VecDeque::new(),
-            fetch_next_allowed: false,
-            finished: false,
-            issue_ex_rf: ISSUE_EX_RF::new(),
-            ex_wb_forward_rf: EX_WB_RF::new(),
-            Arf: arch_rf::new(),
-            fmem: pe_flat_mem::new(),
-            mem_stop_fsm: PE_MEM_stop_FSM::new_with_dram_port(dram_port),
-        }
+        Self::build(PE_MEM_stop_FSM::new_with_dram_port(dram_port))
     }
 
+    #[cfg(test)]
     pub fn push_host_inst(&mut self, host_inst: inst) {
         self.imem.push_back((host_inst, None));
     }
@@ -100,11 +96,13 @@ impl PE {
         }
     }
 
-    pub fn get_Arf(&mut self) -> &mut arch_rf {
+    #[cfg(test)]
+    pub(crate) fn get_Arf(&mut self) -> &mut arch_rf {
         &mut self.Arf
     }
 
-    pub fn get_fmem(&mut self) -> &mut pe_flat_mem {
+    #[cfg(test)]
+    pub(crate) fn get_fmem(&mut self) -> &mut pe_flat_mem {
         &mut self.fmem
     }
 

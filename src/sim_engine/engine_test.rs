@@ -82,8 +82,16 @@ fn dramsim3_wrapper_test() {
 }
 
 use crate::PE::types::inst as pe_inst;
-use crate::sim_engine::request_router::pim_cmd;
+use crate::sim_engine::request_router::{decode_pim_cmd, pim_cmd};
 use crate::sim_engine::request_router_test::{encode_fgo_cmd, encode_pim_cmd};
+
+fn engine_request(addr: u64, is_write: bool) -> EngineRequest {
+    EngineRequest {
+        addr,
+        is_write,
+        decoded_cmd: decode_pim_cmd(addr, &[0; 8]),
+    }
+}
 
 #[test]
 fn scheduling_configuration_is_one_time_and_processor_checked() {
@@ -283,7 +291,7 @@ fn encoded_nop_is_a_valid_pe_request() {
 fn cgo_rejects_encoded_pe_request() {
     let mut engine = Engine::new_cgo();
     let (addr, _) = encode_fgo_cmd(pe_inst::NOP);
-    assert!(!engine.canAccept(addr, true));
+    assert!(!engine.canAccept(engine_request(addr, true)));
 }
 
 #[test]
@@ -291,14 +299,26 @@ fn fgo_rejects_cgo_commands_and_cgo_query_is_read_only() {
     let mut fgo = Engine::new_fgo();
     let (query_addr, _) = encode_pim_cmd(pim_cmd::CgoQuery);
     let (start_addr, _) = encode_pim_cmd(pim_cmd::CgoStart);
-    assert!(!fgo.canAccept(query_addr, false));
-    assert!(!fgo.canAccept(start_addr, true));
+    assert!(!fgo.canAccept(engine_request(query_addr, false)));
+    assert!(!fgo.canAccept(engine_request(start_addr, true)));
 
     let mut cgo = Engine::new_cgo();
-    assert!(cgo.canAccept(query_addr, false));
-    assert!(!cgo.canAccept(query_addr, true));
-    assert!(cgo.canAccept(start_addr, true));
-    assert!(!cgo.canAccept(start_addr, false));
+    assert!(cgo.canAccept(engine_request(query_addr, false)));
+    assert!(!cgo.canAccept(engine_request(query_addr, true)));
+    assert!(cgo.canAccept(engine_request(start_addr, true)));
+    assert!(!cgo.canAccept(engine_request(start_addr, false)));
+}
+
+#[test]
+fn engine_admission_uses_the_supplied_decode_result() {
+    let mut engine = Engine::new_cgo();
+    let request = EngineRequest {
+        addr: 0x40,
+        is_write: false,
+        decoded_cmd: Ok(Some(pim_cmd::CgoQuery)),
+    };
+
+    assert!(engine.canAccept(request));
 }
 
 #[test]

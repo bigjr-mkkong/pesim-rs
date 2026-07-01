@@ -6,6 +6,8 @@ pub enum pim_cmd {
     Fgo(pe_inst),
     CgoStart,
     CgoQuery,
+    Ctrl_CGO_Alloc { asid: u64 },
+    Ctrl_FGO_Alloc { asid: u64 },
 }
 
 impl pim_cmd {
@@ -14,8 +16,14 @@ impl pim_cmd {
     }
 }
 
-pub const PIM_CMD_PAGE_BASE: u64 = 0x1_7ffe_f000;
-pub const PIM_CMD_PAGE_END: u64 = 0x1_7ffe_ffff;
+pub const MEM_BEGIN: u64 = 0x8000_0000;
+
+/*
+ * This is vital bc gem5 generate address starts on 0x8000_0000, but simulator only accepts
+ * 0x0-4Gib. In this case we need to manually cancel out the offset.
+ */
+pub const PIM_CMD_PAGE_BASE: u64 = 0x1_7ffe_f000 - MEM_BEGIN;
+pub const PIM_CMD_PAGE_END: u64 = 0x1_7ffe_ffff - MEM_BEGIN;
 pub const PIM_CMD_SLOT_SIZE: u64 = std::mem::size_of::<cacheline_payload>() as u64;
 
 const REG_A_SHIFT: u32 = 0;
@@ -40,17 +48,19 @@ const OP_ST32: u64 = 9;
 const OP_CGO_START: u64 = 10;
 const OP_CGO_QUERY: u64 = 11;
 
-pub fn is_pim_cmd_request(addr: u64) -> bool {
+const OP_CGO_ALLOC: u64 = 12;
+const OP_FGO_ALLOC: u64 = 13;
+
+fn is_pim_cmd_request(addr: u64) -> bool {
     (PIM_CMD_PAGE_BASE..=PIM_CMD_PAGE_END).contains(&addr)
 }
 
-pub fn routing_addr(addr: u64) -> u64 {
-    addr
-}
-
-pub fn decode_pim_cmd(addr: u64, payload: &cacheline_payload) -> Result<pim_cmd, &'static str> {
+pub fn decode_pim_cmd(
+    addr: u64,
+    payload: &cacheline_payload,
+) -> Result<Option<pim_cmd>, &'static str> {
     if !is_pim_cmd_request(addr) {
-        return Err("address is not inside the PIM command page");
+        return Ok(None);
     }
 
     let offset = addr - PIM_CMD_PAGE_BASE;
@@ -67,50 +77,52 @@ pub fn decode_pim_cmd(addr: u64, payload: &cacheline_payload) -> Result<pim_cmd,
     let mem_addr = ((encoded >> MEM_ADDR_SHIFT) & MEM_ADDR_MASK) as u32;
 
     match opcode {
-        OP_NOP => Ok(pim_cmd::Fgo(pe_inst::NOP)),
-        OP_ADD128 => Ok(pim_cmd::Fgo(pe_inst::ADD128 {
+        OP_NOP => Ok(Some(pim_cmd::Fgo(pe_inst::NOP))),
+        OP_ADD128 => Ok(Some(pim_cmd::Fgo(pe_inst::ADD128 {
             vRD: reg_a,
             vRS0: reg_b,
             vRS1: reg_c,
-        })),
-        OP_SUB128 => Ok(pim_cmd::Fgo(pe_inst::SUB128 {
+        }))),
+        OP_SUB128 => Ok(Some(pim_cmd::Fgo(pe_inst::SUB128 {
             vRD: reg_a,
             vRS0: reg_b,
             vRS1: reg_c,
-        })),
-        OP_MUL128 => Ok(pim_cmd::Fgo(pe_inst::MUL128 {
+        }))),
+        OP_MUL128 => Ok(Some(pim_cmd::Fgo(pe_inst::MUL128 {
             vRD: reg_a,
             vRS0: reg_b,
             vRS1: reg_c,
-        })),
-        OP_MAC128 => Ok(pim_cmd::Fgo(pe_inst::MAC128 {
+        }))),
+        OP_MAC128 => Ok(Some(pim_cmd::Fgo(pe_inst::MAC128 {
             sRD: reg_a,
             sRS0: reg_d,
             vRS0: reg_b,
             vRS1: reg_c,
-        })),
-        OP_RELU => Ok(pim_cmd::Fgo(pe_inst::ReLU {
+        }))),
+        OP_RELU => Ok(Some(pim_cmd::Fgo(pe_inst::ReLU {
             vRD: reg_a,
             vRS0: reg_b,
-        })),
-        OP_LD128 => Ok(pim_cmd::Fgo(pe_inst::LD128 {
+        }))),
+        OP_LD128 => Ok(Some(pim_cmd::Fgo(pe_inst::LD128 {
             vRD: reg_a,
             addr: mem_addr,
-        })),
-        OP_ST128 => Ok(pim_cmd::Fgo(pe_inst::ST128 {
+        }))),
+        OP_ST128 => Ok(Some(pim_cmd::Fgo(pe_inst::ST128 {
             vRS: reg_a,
             addr: mem_addr,
-        })),
-        OP_LD32 => Ok(pim_cmd::Fgo(pe_inst::LD32 {
+        }))),
+        OP_LD32 => Ok(Some(pim_cmd::Fgo(pe_inst::LD32 {
             sRD: reg_a,
             addr: mem_addr,
-        })),
-        OP_ST32 => Ok(pim_cmd::Fgo(pe_inst::ST32 {
+        }))),
+        OP_ST32 => Ok(Some(pim_cmd::Fgo(pe_inst::ST32 {
             sRS: reg_a,
             addr: mem_addr,
-        })),
-        OP_CGO_START => Ok(pim_cmd::CgoStart),
-        OP_CGO_QUERY => Ok(pim_cmd::CgoQuery),
+        }))),
+        OP_CGO_START => Ok(Some(pim_cmd::CgoStart)),
+        OP_CGO_QUERY => Ok(Some(pim_cmd::CgoQuery)),
+        OP_CGO_ALLOC => Ok(Some(pim_cmd::Ctrl_CGO_Alloc { asid: encoded })),
+        OP_FGO_ALLOC => Ok(Some(pim_cmd::Ctrl_FGO_Alloc { asid: encoded })),
         _ => Err("unknown PIM command opcode"),
     }
 }

@@ -221,6 +221,7 @@ pub struct PE_MEM_stop_FSM {
 }
 
 impl PE_MEM_stop_FSM {
+    #[cfg(test)]
     pub const fn new() -> Self {
         Self {
             state: PE_MEM_stop_FSM_states::Idle,

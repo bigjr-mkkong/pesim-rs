@@ -349,6 +349,7 @@ impl SigFSM for MEM_stop_FSM {
 }
 
 impl MEM_stop_FSM {
+    #[cfg(test)]
     pub const fn new() -> Self {
         Self {
             state: MEM_stop_FSM_states::Submit,

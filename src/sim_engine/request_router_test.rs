@@ -1,6 +1,6 @@
 use crate::PE::types::inst;
 use crate::sim_engine::request_router::{
-    PIM_CMD_PAGE_BASE, PIM_CMD_SLOT_SIZE, decode_pim_cmd, is_pim_cmd_request, pim_cmd, routing_addr,
+    PIM_CMD_PAGE_BASE, PIM_CMD_SLOT_SIZE, decode_pim_cmd, pim_cmd,
 };
 
 const REG_A_SHIFT: u32 = 0;
@@ -22,12 +22,16 @@ const OP_LD32: u64 = 8;
 const OP_ST32: u64 = 9;
 const OP_CGO_START: u64 = 10;
 const OP_CGO_QUERY: u64 = 11;
+const OP_CGO_ALLOC: u64 = 12;
+const OP_FGO_ALLOC: u64 = 13;
 
 pub(crate) fn encode_pim_cmd(command: pim_cmd) -> (u64, [u64; 8]) {
     match command {
         pim_cmd::Fgo(instruction) => encode_fgo_cmd(instruction),
         pim_cmd::CgoStart => encode_cgo_cmd(OP_CGO_START),
         pim_cmd::CgoQuery => encode_cgo_cmd(OP_CGO_QUERY),
+        pim_cmd::Ctrl_CGO_Alloc { asid } => encode_alloc_cmd(OP_CGO_ALLOC, asid),
+        pim_cmd::Ctrl_FGO_Alloc { asid } => encode_alloc_cmd(OP_FGO_ALLOC, asid),
     }
 }
 
@@ -59,6 +63,12 @@ pub(crate) fn encode_cgo_cmd(opcode: u64) -> (u64, [u64; 8]) {
     (PIM_CMD_PAGE_BASE + PIM_CMD_SLOT_SIZE * opcode, [0; 8])
 }
 
+pub(crate) fn encode_alloc_cmd(opcode: u64, asid: u64) -> (u64, [u64; 8]) {
+    let mut payload = [0; 8];
+    payload[0] = asid;
+    (PIM_CMD_PAGE_BASE + PIM_CMD_SLOT_SIZE * opcode, payload)
+}
+
 fn pack_regs(reg_a: u8, reg_b: u8, reg_c: u8, reg_d: u8) -> u64 {
     (((reg_a as u64) & REG_MASK) << REG_A_SHIFT)
         | (((reg_b as u64) & REG_MASK) << REG_B_SHIFT)
@@ -72,21 +82,31 @@ fn pack_mem(reg_a: u8, mem_addr: u32) -> u64 {
 
 #[test]
 fn pe_request_uses_fixed_instruction_page() {
-    assert!(!is_pim_cmd_request(PIM_CMD_PAGE_BASE - 1));
-    assert!(is_pim_cmd_request(PIM_CMD_PAGE_BASE));
-    assert!(is_pim_cmd_request(
-        PIM_CMD_PAGE_BASE + PIM_CMD_SLOT_SIZE * OP_ST32
+    let payload = [0; 8];
+
+    assert!(matches!(
+        decode_pim_cmd(PIM_CMD_PAGE_BASE - 1, &payload),
+        Ok(None)
     ));
-    assert!(is_pim_cmd_request(PIM_CMD_PAGE_BASE + 0xfff));
-    assert!(!is_pim_cmd_request(PIM_CMD_PAGE_BASE + 0x1000));
-    assert_eq!(routing_addr(PIM_CMD_PAGE_BASE), PIM_CMD_PAGE_BASE);
+    assert!(matches!(
+        decode_pim_cmd(PIM_CMD_PAGE_BASE, &payload),
+        Ok(Some(_))
+    ));
+    assert!(matches!(
+        decode_pim_cmd(PIM_CMD_PAGE_BASE + PIM_CMD_SLOT_SIZE * OP_ST32, &payload),
+        Ok(Some(_))
+    ));
+    assert!(matches!(
+        decode_pim_cmd(PIM_CMD_PAGE_BASE + 0x1000, &payload),
+        Ok(None)
+    ));
 }
 
 #[test]
 fn rejects_unaligned_and_unknown_slots() {
     let payload = [0; 8];
     assert!(decode_pim_cmd(PIM_CMD_PAGE_BASE + 1, &payload).is_err());
-    assert!(decode_pim_cmd(PIM_CMD_PAGE_BASE + PIM_CMD_SLOT_SIZE * 12, &payload).is_err());
+    assert!(decode_pim_cmd(PIM_CMD_PAGE_BASE + PIM_CMD_SLOT_SIZE * 14, &payload).is_err());
 }
 
 #[test]
@@ -135,7 +155,7 @@ fn fixed_slots_round_trip_supported_instructions() {
 
     for instruction in cases {
         let (addr, payload) = encode_fgo_cmd(instruction);
-        let pim_cmd::Fgo(decoded) = decode_pim_cmd(addr, &payload).unwrap() else {
+        let Some(pim_cmd::Fgo(decoded)) = decode_pim_cmd(addr, &payload).unwrap() else {
             panic!("FGO slot decoded as a non-FGO command");
         };
         assert_same_inst(decoded, instruction);
@@ -147,13 +167,28 @@ fn fixed_slots_decode_cgo_commands() {
     let (start_addr, start_payload) = encode_pim_cmd(pim_cmd::CgoStart);
     assert!(matches!(
         decode_pim_cmd(start_addr, &start_payload),
-        Ok(pim_cmd::CgoStart)
+        Ok(Some(pim_cmd::CgoStart))
     ));
 
     let (query_addr, query_payload) = encode_pim_cmd(pim_cmd::CgoQuery);
     assert!(matches!(
         decode_pim_cmd(query_addr, &query_payload),
-        Ok(pim_cmd::CgoQuery)
+        Ok(Some(pim_cmd::CgoQuery))
+    ));
+}
+
+#[test]
+fn fixed_slots_decode_allocation_control_commands() {
+    let (cgo_addr, cgo_payload) = encode_pim_cmd(pim_cmd::Ctrl_CGO_Alloc { asid: 0xabc });
+    assert!(matches!(
+        decode_pim_cmd(cgo_addr, &cgo_payload),
+        Ok(Some(pim_cmd::Ctrl_CGO_Alloc { asid: 0xabc }))
+    ));
+
+    let (fgo_addr, fgo_payload) = encode_pim_cmd(pim_cmd::Ctrl_FGO_Alloc { asid: 0xdef });
+    assert!(matches!(
+        decode_pim_cmd(fgo_addr, &fgo_payload),
+        Ok(Some(pim_cmd::Ctrl_FGO_Alloc { asid: 0xdef }))
     ));
 }
 

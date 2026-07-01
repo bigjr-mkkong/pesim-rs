@@ -2,7 +2,7 @@ use crate::PE::types::inst as pe_inst;
 use crate::cpu::pimcpu_types::{fatptr_rf, inst};
 use crate::memory::mem_portal::dram_req;
 use crate::sim_engine::engine::{Engine, EngineSchedulingMode};
-use crate::sim_engine::request_router::pim_cmd;
+use crate::sim_engine::request_router::{PIM_CMD_PAGE_BASE, PIM_CMD_SLOT_SIZE, pim_cmd};
 use crate::sim_engine::request_router_test::{encode_fgo_cmd, encode_pim_cmd};
 use crate::sim_engine::sim::{Sim, SimMode, engine_cfg};
 
@@ -69,7 +69,7 @@ const PIM_PROGRAM_TICKS: u64 = 10_000;
 fn enqueue_when_accepted(sim: &mut Sim, addr: u64, is_write: bool) {
     for _ in 0..MAX_ENQUEUE_TICKS {
         if sim.canAccept(addr, is_write) {
-            sim.enqueue(addr, is_write);
+            sim.enqueue_with_data(addr, [0; 8], 64, is_write);
             return;
         }
 
@@ -116,6 +116,7 @@ struct HostDriverResult {
 struct HostDriverRequest {
     addr: u64,
     payload: [u64; 8],
+    payload_sz_bytes: u32,
     is_write: bool,
 }
 
@@ -124,6 +125,7 @@ impl HostDriverRequest {
         Self {
             addr,
             payload: [0; 8],
+            payload_sz_bytes: 64,
             is_write,
         }
     }
@@ -132,6 +134,7 @@ impl HostDriverRequest {
         Self {
             addr,
             payload,
+            payload_sz_bytes: 8,
             is_write: true,
         }
     }
@@ -148,7 +151,12 @@ fn run_host_driver(sim: &mut Sim, requests: &[HostDriverRequest]) -> HostDriverR
         if let Some(request) = requests.get(submitted).copied()
             && sim.canAccept(request.addr, request.is_write)
         {
-            sim.enqueue_with_data(request.addr, request.payload, request.is_write);
+            sim.enqueue_with_data(
+                request.addr,
+                request.payload,
+                request.payload_sz_bytes,
+                request.is_write,
+            );
             submitted += 1;
         }
 
@@ -553,7 +561,7 @@ fn sim_routes_encoded_request_to_pe_and_returns_dram_req_completion() {
         vRS1: 2,
     });
     assert!(sim.canAccept(addr, true));
-    sim.enqueue_with_data(addr, payload, true);
+    sim.enqueue_with_data(addr, payload, 8, true);
 
     let completions = drain_until_completions(&mut sim, 1);
     assert_eq!(completions[0].0.get_addr(), addr);
@@ -604,7 +612,7 @@ fn sim_broadcasts_encoded_request_to_all_fgo_engines() {
         vRS1: 2,
     });
     assert!(sim.canAccept(addr, true));
-    sim.enqueue_with_data(addr, payload, true);
+    sim.enqueue_with_data(addr, payload, 8, true);
 
     let completions = drain_until_completions(&mut sim, 2);
     assert_eq!(completions.len(), 2);
@@ -653,8 +661,8 @@ fn sim_broadcasts_cgo_commands_only_to_cgo_engines() {
 
     let (start_addr, start_payload) = encode_pim_cmd(pim_cmd::CgoStart);
     assert!(sim.canAccept(start_addr, true));
-    assert!(!sim.canAccept(start_addr, false));
-    sim.enqueue_with_data(start_addr, start_payload, true);
+    assert!(sim.canAccept(start_addr, false));
+    sim.enqueue_with_data(start_addr, start_payload, 8, true);
 
     sim.tick();
     let mut completions = Vec::new();
@@ -672,8 +680,8 @@ fn sim_broadcasts_cgo_commands_only_to_cgo_engines() {
 
     let (query_addr, query_payload) = encode_pim_cmd(pim_cmd::CgoQuery);
     assert!(sim.canAccept(query_addr, false));
-    assert!(!sim.canAccept(query_addr, true));
-    sim.enqueue_with_data(query_addr, query_payload, false);
+    assert!(sim.canAccept(query_addr, true));
+    sim.enqueue_with_data(query_addr, query_payload, 8, false);
 
     sim.tick();
     let mut completions = Vec::new();
@@ -689,12 +697,320 @@ fn sim_broadcasts_cgo_commands_only_to_cgo_engines() {
 }
 
 #[test]
-fn sim_rejects_encoded_request_without_fgo_engine() {
+fn sim_handles_cgo_alloc_as_next_cycle_control_completion() {
     let mut sim = Sim::new();
     sim.set_mode_for_test(SimMode::Pim);
-    let (addr, _) = encode_fgo_cmd(pe_inst::NOP);
+    let max_ch = sim.dsim3.get_channels();
+    let max_ra = sim.dsim3.get_ranks();
+    let max_bg = sim.dsim3.get_bankgroups_per_rank();
+    let max_ba = sim.dsim3.get_banks_per_bg();
+    let expected_engines = (max_ch * max_ra * max_bg * max_ba) as usize;
+    let (addr, payload) = encode_pim_cmd(pim_cmd::Ctrl_CGO_Alloc { asid: 0x111 });
 
-    assert!(!sim.canAccept(addr, true));
+    assert!(sim.canAccept(addr, true));
+    assert!(sim.canAccept(addr, false));
+    sim.enqueue_with_data(addr, payload, 8, true);
+    assert!(!sim.hasComplete());
+
+    sim.tick();
+    let completed = sim
+        .getComplete()
+        .expect("CGO allocation should complete on the next tick");
+    assert_eq!(completed.get_addr(), addr);
+    assert_eq!(completed.get_payload()[0], expected_engines as u64);
+    assert!(!completed.is_read());
+    assert_eq!(sim.engines.len(), expected_engines);
+
+    for ch in 0..max_ch {
+        for ra in 0..max_ra {
+            for bg in 0..max_bg {
+                for ba in 0..max_ba {
+                    assert!(
+                        sim.engines
+                            .contains_key(&engine_cfg::CGO { ch, ra, bg, ba })
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn sim_completes_bad_alloc_direction_without_allocating() {
+    let mut sim = Sim::new();
+    sim.set_mode_for_test(SimMode::Pim);
+    let expected_engines = (sim.dsim3.get_channels()
+        * sim.dsim3.get_ranks()
+        * sim.dsim3.get_bankgroups_per_rank()
+        * sim.dsim3.get_banks_per_bg()) as usize;
+    let (bad_addr, bad_payload) = encode_pim_cmd(pim_cmd::Ctrl_CGO_Alloc { asid: 0x111 });
+
+    assert!(sim.canAccept(bad_addr, false));
+    sim.enqueue_with_data(bad_addr, bad_payload, 8, false);
+    assert!(!sim.hasComplete());
+    assert!(sim.engines.is_empty());
+
+    sim.tick();
+    let rejected = sim
+        .getComplete()
+        .expect("invalid allocation direction should complete on the next tick");
+    assert_eq!(rejected.get_addr(), bad_addr);
+    assert!(rejected.is_read());
+    assert!(rejected.get_id().is_some());
+    assert!(rejected.get_issue_time().is_some());
+    assert!(sim.engines.is_empty());
+
+    let (addr, payload) = encode_pim_cmd(pim_cmd::Ctrl_CGO_Alloc { asid: 0x222 });
+    sim.enqueue_with_data(addr, payload, 8, true);
+    sim.tick();
+    let completed = sim
+        .getComplete()
+        .expect("valid allocation should complete on the next tick");
+    assert_eq!(completed.get_payload()[0], expected_engines as u64);
+    assert_eq!(sim.engines.len(), expected_engines);
+}
+
+#[test]
+fn sim_cgo_alloc_scheduling_mode_is_configurable_to_cgo_modes_only() {
+    let mut sim = Sim::new();
+    assert_eq!(
+        sim.set_cgo_alloc_scheduling_mode(EngineSchedulingMode::Host_FGO_share),
+        Err("CGO allocation scheduling mode must target CGO engines")
+    );
+    assert!(
+        sim.set_cgo_alloc_scheduling_mode(EngineSchedulingMode::CGO_only)
+            .is_ok()
+    );
+    assert!(
+        sim.set_cgo_alloc_scheduling_mode(EngineSchedulingMode::Host_CGO_share)
+            .is_ok()
+    );
+}
+
+#[test]
+fn sim_alloc_winner_takes_all_and_second_asid_gets_empty_allocation() {
+    let mut sim = Sim::new();
+    sim.set_mode_for_test(SimMode::Pim);
+    let max_ch = sim.dsim3.get_channels();
+    let max_ra = sim.dsim3.get_ranks();
+    let max_bg = sim.dsim3.get_bankgroups_per_rank();
+    let max_ba = sim.dsim3.get_banks_per_bg();
+    let expected_engines = (max_ch * max_ra * max_bg * max_ba) as usize;
+
+    let (first_addr, first_payload) = encode_pim_cmd(pim_cmd::Ctrl_FGO_Alloc { asid: 0x111 });
+    sim.enqueue_with_data(first_addr, first_payload, 8, true);
+    sim.tick();
+    let first = sim
+        .getComplete()
+        .expect("first allocation should complete on the next tick");
+    assert_eq!(first.get_payload()[0], expected_engines as u64);
+    assert_eq!(sim.engines.len(), expected_engines);
+
+    let (second_addr, second_payload) = encode_pim_cmd(pim_cmd::Ctrl_CGO_Alloc { asid: 0x222 });
+    sim.enqueue_with_data(second_addr, second_payload, 8, true);
+    sim.tick();
+    let second = sim
+        .getComplete()
+        .expect("second allocation should still complete on the next tick");
+    assert_eq!(second.get_payload()[0], 0);
+    assert_eq!(sim.engines.len(), expected_engines);
+
+    for ch in 0..max_ch {
+        for ra in 0..max_ra {
+            for bg in 0..max_bg {
+                for ba in 0..max_ba {
+                    assert!(
+                        sim.engines
+                            .contains_key(&engine_cfg::FGO { ch, ra, bg, ba })
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn sim_completes_encoded_request_without_fgo_engine_on_next_tick() {
+    let mut sim = Sim::new();
+    sim.set_mode_for_test(SimMode::Pim);
+    let (addr, payload) = encode_fgo_cmd(pe_inst::NOP);
+
+    assert!(sim.canAccept(addr, true));
+    sim.enqueue_with_data(addr, payload, 8, true);
+    assert!(!sim.hasComplete());
+
+    sim.tick();
+    let completed = sim
+        .getComplete()
+        .expect("untargeted PIM command should complete on the next tick");
+    assert_eq!(completed.get_addr(), addr);
+    assert!(!completed.is_read());
+    assert!(completed.get_id().is_some());
+    assert!(completed.get_issue_time().is_some());
+}
+
+#[test]
+fn sim_completes_invalid_command_page_accesses_on_next_tick() {
+    let mut sim = Sim::new();
+    sim.set_mode_for_test(SimMode::Pim);
+    let accesses = [
+        (PIM_CMD_PAGE_BASE + 1, false),
+        (PIM_CMD_PAGE_BASE + PIM_CMD_SLOT_SIZE * 14, true),
+    ];
+
+    for (addr, is_write) in accesses {
+        assert!(sim.canAccept(addr, is_write));
+        sim.enqueue_with_data(addr, [0; 8], 8, is_write);
+    }
+    assert!(!sim.hasComplete());
+
+    sim.tick();
+    let mut completed = Vec::new();
+    while let Some(req) = sim.getComplete() {
+        completed.push((req.get_addr(), !req.is_read()));
+    }
+    completed.sort_unstable();
+
+    let mut expected = accesses.to_vec();
+    expected.sort_unstable();
+    assert_eq!(completed, expected);
+}
+
+#[test]
+fn sim_completes_wrong_pim_command_direction_without_execution() {
+    let mut sim = Sim::new();
+    sim.set_mode_for_test(SimMode::Pim);
+    let cfg = engine_cfg::FGO {
+        ch: 0,
+        ra: 0,
+        bg: 0,
+        ba: 0,
+    };
+    sim.add_engine_with_scheduling_for_test(cfg, EngineSchedulingMode::Host_FGO_share);
+    sim.engine_mut_for_test(cfg)
+        .get_pe()
+        .get_Arf()
+        .write_vRF(1, [2; 8]);
+    sim.engine_mut_for_test(cfg)
+        .get_pe()
+        .get_Arf()
+        .write_vRF(2, [5; 8]);
+    let (addr, payload) = encode_fgo_cmd(pe_inst::ADD128 {
+        vRD: 3,
+        vRS0: 1,
+        vRS1: 2,
+    });
+
+    assert!(sim.canAccept(addr, false));
+    sim.enqueue_with_data(addr, payload, 8, false);
+    assert!(!sim.hasComplete());
+
+    sim.tick();
+    let completed = sim
+        .getComplete()
+        .expect("wrong-direction PIM command should complete on the next tick");
+    assert_eq!(completed.get_addr(), addr);
+    assert!(completed.is_read());
+    assert_eq!(
+        sim.engine_mut_for_test(cfg).get_pe().get_Arf().read_vRF(3),
+        [0; 8]
+    );
+}
+
+#[test]
+fn sim_completes_non_eight_byte_pim_commands_without_execution() {
+    let mut sim = Sim::new();
+    sim.set_mode_for_test(SimMode::Pim);
+    let cfg = engine_cfg::FGO {
+        ch: 0,
+        ra: 0,
+        bg: 0,
+        ba: 0,
+    };
+    sim.add_engine_with_scheduling_for_test(cfg, EngineSchedulingMode::Host_FGO_share);
+    sim.engine_mut_for_test(cfg)
+        .get_pe()
+        .get_Arf()
+        .write_vRF(1, [2; 8]);
+    sim.engine_mut_for_test(cfg)
+        .get_pe()
+        .get_Arf()
+        .write_vRF(2, [5; 8]);
+    let (addr, payload) = encode_fgo_cmd(pe_inst::ADD128 {
+        vRD: 3,
+        vRS0: 1,
+        vRS1: 2,
+    });
+    let invalid_sizes = [0, 1, 4, 16, 64];
+
+    for payload_sz_bytes in invalid_sizes {
+        assert!(sim.canAccept(addr, true));
+        sim.enqueue_with_data(addr, payload, payload_sz_bytes, true);
+    }
+    assert!(!sim.hasComplete());
+
+    sim.tick();
+    let mut completion_count = 0;
+    while let Some(completed) = sim.getComplete() {
+        assert_eq!(completed.get_addr(), addr);
+        assert!(!completed.is_read());
+        completion_count += 1;
+    }
+    assert_eq!(completion_count, invalid_sizes.len());
+    assert_eq!(
+        sim.engine_mut_for_test(cfg).get_pe().get_Arf().read_vRF(3),
+        [0; 8]
+    );
+}
+
+#[test]
+fn sim_completes_host_memory_to_cgo_only_bank_on_next_tick() {
+    let mut sim = Sim::new();
+    sim.set_mode_for_test(SimMode::Pim);
+    let (_engine_addr, cfg) = find_addr_for_new_cgo_cfg(&mut sim, &[]);
+    sim.add_engine_with_scheduling_for_test(cfg, EngineSchedulingMode::CGO_only);
+    let addrs = find_addrs_inside_engine_area(&mut sim, 2);
+    let requests = [(addrs[0], false), (addrs[1], true)];
+
+    for (addr, is_write) in requests {
+        assert!(sim.canAccept(addr, is_write));
+        sim.enqueue_with_data(addr, [0; 8], 64, is_write);
+    }
+    assert!(!sim.hasComplete());
+
+    sim.tick();
+    let mut completed = Vec::new();
+    while let Some(req) = sim.getComplete() {
+        completed.push((req.get_addr(), !req.is_read()));
+    }
+    completed.sort_unstable();
+
+    let mut expected = requests.to_vec();
+    expected.sort_unstable();
+    assert_eq!(completed, expected);
+}
+
+#[test]
+fn sim_routes_host_memory_to_host_cgo_share_through_timed_engine_path() {
+    let mut sim = Sim::new();
+    sim.set_mode_for_test(SimMode::Pim);
+    let (_engine_addr, cfg) = find_addr_for_new_cgo_cfg(&mut sim, &[]);
+    sim.add_engine_with_scheduling_for_test(cfg, EngineSchedulingMode::Host_CGO_share);
+    let addr = find_addrs_inside_engine_area(&mut sim, 1)[0];
+
+    assert!(sim.canAccept(addr, false));
+    sim.enqueue_with_data(addr, [0; 8], 64, false);
+    assert!(!sim.hasComplete());
+
+    sim.tick();
+    assert!(
+        !sim.hasComplete(),
+        "Host_CGO_share memory request must not use next-cycle completion"
+    );
+
+    let completions = drain_until_completions(&mut sim, 1);
+    assert_eq!(completions[0].0.get_addr(), addr);
+    assert!(completions[0].0.is_read());
 }
 
 #[test]

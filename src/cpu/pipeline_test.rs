@@ -1,7 +1,5 @@
 use crate::CPU;
-use crate::cpu::pimcpu_types::{CPU_stages, fatptr_rf, inst};
-use crate::cpu::signal_scoreboard::{signal_reason, signal_req};
-use std::collections::HashSet;
+use crate::cpu::pimcpu_types::{fatptr_rf, inst};
 #[cfg(test)]
 mod tests {
     use super::*;

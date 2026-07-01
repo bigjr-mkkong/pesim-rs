@@ -1,8 +1,6 @@
 use crate::cpu::RF::arch_rf;
 use crate::cpu::imem::IMEM;
 use crate::cpu::pimcpu_types::{CPU_stages, arch_action, arch_dest};
-use std::cell::RefCell;
-use std::rc::Rc;
 
 use crate::cpu::AGU::{AGU_MEM_rf, AGU_stop_FSM};
 use crate::cpu::EX::{EX_AGU_rf, EX_stop_FSM, RAW_resolution_FSM};
@@ -15,8 +13,6 @@ use crate::cpu::signal_scoreboard::{
 use crate::memory::AGU_unit::AGU_unit;
 use crate::memory::flat_memory::cpu_flat_mem;
 use crate::memory::mem_portal::dram_portal;
-
-pub const PC_TESTING: u16 = 0xffff;
 
 pub struct CPU {
     pub(crate) imem: IMEM,
@@ -80,6 +76,7 @@ impl CPU {
         }
     }
 
+    #[cfg(test)]
     pub fn new() -> Self {
         Self::build(MEM_stop_FSM::new())
     }
@@ -96,11 +93,13 @@ impl CPU {
         &mut self.fmem
     }
 
-    pub fn get_imem(&mut self) -> &mut IMEM {
+    #[cfg(test)]
+    pub(crate) fn get_imem(&mut self) -> &mut IMEM {
         &mut self.imem
     }
 
-    pub fn get_agu(&mut self) -> &mut AGU_unit {
+    #[cfg(test)]
+    pub(crate) fn get_agu(&mut self) -> &mut AGU_unit {
         &mut self.agu
     }
 

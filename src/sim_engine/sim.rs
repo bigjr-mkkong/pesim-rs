@@ -44,10 +44,12 @@
 use crate::dsim3_paths;
 use crate::memory::dramsim3_wrapper::dramsim3_wrapper;
 use crate::memory::mem_portal::{cacheline_payload, dram_req};
-use crate::sim_engine::engine::Engine;
-use crate::sim_engine::engine::EngineSchedulingMode;
-use crate::sim_engine::request_router::{decode_pim_cmd, is_pim_cmd_request, routing_addr};
+use crate::sim_engine::engine::{Engine, EngineRequest, EngineSchedulingMode};
+use crate::sim_engine::engine_alloc::engine_alloc;
+use crate::sim_engine::request_router::{decode_pim_cmd, pim_cmd};
 use std::collections::HashMap;
+
+const PIM_CMD_PAYLOAD_SIZE_BYTES: u32 = std::mem::size_of::<u64>() as u32;
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub enum engine_cfg {
@@ -64,7 +66,12 @@ pub struct Sim {
     engines: HashMap<engine_cfg, Engine>,
     dsim3: dramsim3_wrapper,
     dsim3_comp_queue: Vec<dram_req>,
+    immediate_complete_next: Vec<dram_req>,
+    immediate_complete_ready: Vec<dram_req>,
     sim_mode: SimMode,
+    allocator: engine_alloc,
+    //Preset of Engine scheduling mode for allocated CGO engine
+    cgo_alloc_scheduling_mode: EngineSchedulingMode,
 }
 
 impl Sim {
@@ -72,11 +79,22 @@ impl Sim {
         let (cfg_path, out_dir) = dsim3_paths();
         let mut dsim3_inst = dramsim3_wrapper::new(cfg_path, out_dir, 0, 0, 0, 0);
         dsim3_inst.SetPimMode(false); //Set dsim3 as non-pim as it handle normal traces
+        let allocator = engine_alloc::new(
+            dsim3_inst.get_channels(),
+            dsim3_inst.get_ranks(),
+            dsim3_inst.get_bankgroups_per_rank(),
+            dsim3_inst.get_banks_per_bg(),
+        );
+
         Self {
             engines: HashMap::new(),
             dsim3: dsim3_inst,
             dsim3_comp_queue: Vec::new(),
-            sim_mode: SimMode::Host,
+            immediate_complete_next: Vec::new(),
+            immediate_complete_ready: Vec::new(),
+            sim_mode: SimMode::Pim,
+            allocator,
+            cgo_alloc_scheduling_mode: EngineSchedulingMode::Host_CGO_share,
         }
     }
 
@@ -106,6 +124,19 @@ impl Sim {
             .set_scheduling_mode(scheduling_mode)
     }
 
+    pub fn set_cgo_alloc_scheduling_mode(
+        &mut self,
+        scheduling_mode: EngineSchedulingMode,
+    ) -> Result<(), &'static str> {
+        match scheduling_mode {
+            EngineSchedulingMode::CGO_only | EngineSchedulingMode::Host_CGO_share => {
+                self.cgo_alloc_scheduling_mode = scheduling_mode;
+                Ok(())
+            }
+            _ => Err("CGO allocation scheduling mode must target CGO engines"),
+        }
+    }
+
     pub fn clock_period(&mut self) -> f64 {
         self.dsim3.get_TCK()
     }
@@ -121,43 +152,61 @@ impl Sim {
     }
 
     pub fn canAccept(&mut self, addr: u64, is_write: bool) -> bool {
-        if is_pim_cmd_request(addr) {
-            if !matches!(self.sim_mode, SimMode::Pim) {
-                return false;
-            }
+        let decoded_cmd = decode_pim_cmd(addr, &[0; 8]);
+        let request = EngineRequest {
+            addr,
+            is_write,
+            decoded_cmd,
+        };
 
-            let Ok(cmd) = decode_pim_cmd(addr, &[0; 8]) else {
-                return false;
-            };
-            let mut has_target = false;
-            for engine in self.engines.values_mut() {
-                if engine.can_accept_pim_cmd(cmd, is_write) {
-                    has_target = true;
-                    if !engine.canAccept(addr, is_write) {
-                        return false;
-                    }
-                }
-            }
-
-            return has_target;
+        match decoded_cmd {
+            Ok(Some(cmd)) => self.can_accept_pim_cmd(request, cmd),
+            Ok(None) => self.can_accept_regular_memory(request),
+            Err(_) => true,
         }
-
-        if let Some(cfg) = self.get_engine_cfg(addr) {
-            return self
-                .engines
-                .get_mut(&cfg)
-                .expect("Cannot detect available engine")
-                .canAccept(addr, is_write);
-        }
-
-        self.dsim3.WillAcceptTransaction(addr, is_write)
     }
 
-    //This function will return None if addr belongs to non-pim area
+    fn can_accept_pim_cmd(&mut self, request: EngineRequest, cmd: pim_cmd) -> bool {
+        if !matches!(self.sim_mode, SimMode::Pim)
+            || cmd.expects_write() != request.is_write
+            || matches!(
+                cmd,
+                pim_cmd::Ctrl_CGO_Alloc { .. } | pim_cmd::Ctrl_FGO_Alloc { .. }
+            )
+        {
+            return true;
+        }
+
+        self.engines.values_mut().all(|engine| {
+            !engine.can_accept_pim_cmd(cmd, request.is_write) || engine.canAccept(request)
+        })
+    }
+
+    fn can_accept_regular_memory(&mut self, request: EngineRequest) -> bool {
+        if matches!(self.sim_mode, SimMode::Pim) {
+            if let Some(cfg) = self.get_engine_cfg(request.addr) {
+                let engine = self
+                    .engines
+                    .get_mut(&cfg)
+                    .expect("mapped engine must exist");
+                if !engine.accepts_host_mem_requests() {
+                    return true;
+                }
+
+                return engine.canAccept(request)
+                    && self
+                        .dsim3
+                        .WillAcceptTransaction(request.addr, request.is_write);
+            }
+        }
+
+        self.dsim3
+            .WillAcceptTransaction(request.addr, request.is_write)
+    }
+
+    // This function returns None when no enabled engine owns this address.
     fn get_engine_cfg(&mut self, addr: u64) -> Option<engine_cfg> {
-        let addr_bulk = self
-            .dsim3
-            .global_addr_to_local_components(routing_addr(addr));
+        let addr_bulk = self.dsim3.global_addr_to_local_components(addr);
         let cgo_cfg = engine_cfg::CGO {
             ch: addr_bulk.channel,
             ra: addr_bulk.rank,
@@ -171,9 +220,7 @@ impl Sim {
             ba: addr_bulk.bank,
         };
 
-        if is_pim_cmd_request(addr) && self.engines.contains_key(&fgo_cfg) {
-            Some(fgo_cfg)
-        } else if self.engines.contains_key(&cgo_cfg) {
+        if self.engines.contains_key(&cgo_cfg) {
             Some(cgo_cfg)
         } else if self.engines.contains_key(&fgo_cfg) {
             Some(fgo_cfg)
@@ -182,49 +229,109 @@ impl Sim {
         }
     }
 
-    pub fn enqueue(&mut self, addr: u64, is_write: bool) {
-        self.enqueue_with_data(addr, [0; 8], is_write);
-    }
-
-    pub fn enqueue_with_data(&mut self, addr: u64, payload: cacheline_payload, is_write: bool) {
+    pub fn enqueue_with_data(
+        &mut self,
+        addr: u64,
+        payload: cacheline_payload,
+        payload_sz_bytes: u32,
+        is_write: bool,
+    ) {
         let req = dram_req::new_with_payload(addr, payload, !is_write, false);
+        let decoded_cmd = decode_pim_cmd(addr, &payload);
 
-        if is_pim_cmd_request(addr) {
-            if !matches!(self.sim_mode, SimMode::Pim) {
-                panic!("cannot enqueue a PIM command while Sim is in host mode");
-            }
-
-            let mut req = req;
-            req.set_id(self.dsim3.get_req_id());
-            req.set_issue_time(self.dsim3.get_clock_tick() as u64);
-
-            let cmd = decode_pim_cmd(addr, &payload)
-                .unwrap_or_else(|err| panic!("cannot decode PIM command request: {err}"));
-            let mut pushed = false;
-            for engine in self.engines.values_mut() {
-                if engine.can_accept_pim_cmd(cmd, is_write) {
-                    if !engine.canAccept(addr, is_write) {
-                        panic!("PIM command target engine cannot accept the request");
-                    }
-                    engine.enqueue_host_pim_request(req.clone(), cmd);
-                    pushed = true;
-                }
-            }
-
-            if !pushed {
-                panic!("PIM command address does not target any compatible engine");
-            }
+        if payload_sz_bytes != PIM_CMD_PAYLOAD_SIZE_BYTES && !matches!(decoded_cmd, Ok(None)) {
+            self.enqueue_next_cycle_completion(req);
             return;
         }
 
-        let mut req = req;
+        match decoded_cmd {
+            Ok(Some(cmd)) if !matches!(self.sim_mode, SimMode::Pim) => {
+                eprintln!("warning: ignoring PIM command while Sim is in host mode");
+                self.enqueue_next_cycle_completion(req);
+            }
+            Ok(Some(cmd)) if cmd.expects_write() != is_write => {
+                eprintln!("warning: ignoring PIM command with invalid access direction");
+                self.enqueue_next_cycle_completion(req);
+            }
+            Ok(Some(cmd @ (pim_cmd::Ctrl_CGO_Alloc { .. } | pim_cmd::Ctrl_FGO_Alloc { .. }))) => {
+                self.enqueue_sim_control_cmd(req, cmd);
+            }
+            Ok(Some(cmd)) => self.enqueue_pim_cmd(req, cmd),
+            Ok(None) => {
+                self.enqueue_regular_memory(req);
+            }
+            Err(err) => {
+                eprintln!("warning: ignoring invalid PIM command at {addr:#x}: {err}");
+                self.enqueue_next_cycle_completion(req);
+            }
+        }
+    }
 
+    fn enqueue_sim_control_cmd(&mut self, mut req: dram_req, cmd: pim_cmd) {
+        let (allocated, scheduling_mode) = match cmd {
+            pim_cmd::Ctrl_CGO_Alloc { asid } => (
+                self.allocator.alloc_cgo(asid),
+                self.cgo_alloc_scheduling_mode,
+            ),
+            pim_cmd::Ctrl_FGO_Alloc { asid } => (
+                self.allocator.alloc_fgo(asid),
+                EngineSchedulingMode::Host_FGO_share,
+            ),
+            _ => panic!("unsupported simulator control command"),
+        };
+
+        let allocated_count = allocated.len();
+        for cfg in allocated {
+            if !self.engines.contains_key(&cfg) {
+                self.add_engines(cfg);
+                self.set_engine_scheduling_mode(cfg, scheduling_mode)
+                    .expect("allocated engine should accept default scheduling mode");
+            }
+        }
+
+        req.set_payload_word0(allocated_count as u64);
+        self.enqueue_next_cycle_completion(req);
+    }
+
+    fn enqueue_pim_cmd(&mut self, mut req: dram_req, cmd: pim_cmd) {
+        req.set_id(self.dsim3.get_req_id());
+        req.set_issue_time(self.dsim3.get_clock_tick() as u64);
+        let request = EngineRequest {
+            addr: req.get_addr(),
+            is_write: !req.is_read(),
+            decoded_cmd: Ok(Some(cmd)),
+        };
+
+        let mut pushed = false;
+        for engine in self.engines.values_mut() {
+            if engine.can_accept_pim_cmd(cmd, request.is_write) {
+                if !engine.canAccept(request) {
+                    panic!("PIM command target engine cannot accept the request");
+                }
+                engine.enqueue_host_pim_request(req.clone(), cmd);
+                pushed = true;
+            }
+        }
+
+        if !pushed {
+            eprintln!("warning: PIM command has no initialized compatible engine");
+            self.immediate_complete_next.push(req);
+        }
+    }
+
+    fn enqueue_regular_memory(&mut self, mut req: dram_req) {
         if let SimMode::Pim = self.sim_mode {
-            if let Some(cfg) = self.get_engine_cfg(addr) {
-                self.engines
+            if let Some(cfg) = self.get_engine_cfg(req.get_addr()) {
+                let engine = self
+                    .engines
                     .get_mut(&cfg)
-                    .expect("Cannot detect available engine")
-                    .enqueue_host_mem_request(req.clone());
+                    .expect("Cannot detect available engine");
+                if !engine.accepts_host_mem_requests() {
+                    eprintln!("warning: ignoring host memory request to a PIM-only engine");
+                    self.enqueue_next_cycle_completion(req);
+                    return;
+                }
+                engine.enqueue_host_mem_request(req.clone());
             }
         }
 
@@ -235,7 +342,17 @@ impl Sim {
         self.dsim3.AddTransactionReq(req);
     }
 
+    fn enqueue_next_cycle_completion(&mut self, mut req: dram_req) {
+        req.set_id(self.dsim3.get_req_id());
+        req.set_issue_time(self.dsim3.get_clock_tick() as u64);
+        self.immediate_complete_next.push(req);
+    }
+
     pub fn hasComplete(&self) -> bool {
+        if !self.immediate_complete_ready.is_empty() {
+            return true;
+        }
+
         if let SimMode::Host = self.sim_mode {
             return !self.dsim3_comp_queue.is_empty();
         }
@@ -245,6 +362,10 @@ impl Sim {
     }
 
     pub fn getComplete(&mut self) -> Option<dram_req> {
+        if let Some(req) = self.immediate_complete_ready.pop() {
+            return Some(req);
+        }
+
         if let Some(req) = self.dsim3_comp_queue.pop() {
             return Some(req);
         }
@@ -265,6 +386,8 @@ impl Sim {
 
         if let SimMode::Host = self.sim_mode {
             self.dsim3_comp_queue.extend(completed);
+            self.immediate_complete_ready
+                .append(&mut self.immediate_complete_next);
             return;
         }
 
@@ -281,6 +404,9 @@ impl Sim {
                 self.dsim3_comp_queue.push(req);
             }
         }
+
+        self.immediate_complete_ready
+            .append(&mut self.immediate_complete_next);
     }
 }
 

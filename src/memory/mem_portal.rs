@@ -106,8 +106,6 @@ pub struct dram_portal {
     simcpu_resp: Rc<RefCell<Vec<dram_req>>>,
     host_resp: Rc<RefCell<Vec<dram_req>>>,
     mode: Rc<RefCell<portal_mode>>,
-    pimcpu_reqcnt: u64,
-    host_reqcnt: u64,
 }
 
 // A dram_portal is only shared inside one Engine (between that Engine and its CPU or PE).
@@ -124,8 +122,6 @@ impl dram_portal {
             simcpu_resp: Rc::new(RefCell::new(Vec::new())),
             host_resp: Rc::new(RefCell::new(Vec::new())),
             mode: Rc::new(RefCell::new(portal_mode::PIM)),
-            host_reqcnt: 0,
-            pimcpu_reqcnt: 0,
         }
     }
 
@@ -135,14 +131,6 @@ impl dram_portal {
 
     pub fn set_mode(&mut self, new_mode: portal_mode) {
         *self.mode.borrow_mut() = new_mode;
-    }
-
-    pub fn get_pimreq_cnt(&self) -> u64 {
-        self.pimcpu_reqcnt
-    }
-
-    pub fn get_hostreq_cnt(&self) -> u64 {
-        self.host_reqcnt
     }
 
     pub fn req_drained_for_mode(&self, mode: portal_mode) -> bool {
@@ -199,9 +187,5 @@ impl dram_portal {
 
     pub fn take_host_completed(&mut self) -> Option<dram_req> {
         self.take_response(false, None)
-    }
-
-    pub fn host_has_complete(&self) -> bool {
-        !self.host_resp.borrow().is_empty()
     }
 }

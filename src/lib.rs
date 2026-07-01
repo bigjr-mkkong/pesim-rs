@@ -5,6 +5,8 @@
 use cpu::pipeline::CPU;
 use std::path::PathBuf;
 
+use sim_engine::request_router::MEM_BEGIN;
+
 #[cfg(not(test))]
 pub const DSIM3_CFG_PATH: &str = "/gem5/ext/pesim/pesim-rs/cfg/DDR4_8Gb_x4_2400_pim.ini";
 #[cfg(test)]
@@ -60,9 +62,10 @@ typedef struct PEsim_rs_MemReq
     bool is_write;
 }PEsim_rs_MemReq;
 
-typedef struct PESim_cacheline{
+typedef struct PESim_payload{
     uint64_t dword_payload[8];
-}PESim_cacheline;
+    uint32_t payload_sz_bytes;
+}PESim_payload;
 
 typedef struct PESim_body PESim_body;
 
@@ -73,7 +76,7 @@ void pesim_print_stats(PESim_body *sim);
 void pesim_reset_stats(PESim_body *sim);
 
 bool pesim_canAccept(PESim_body *sim, uint64_t addr, bool is_write);
-bool pesim_enqueue_with_data(PESim_body *sim, uint64_t addr, PESim_cacheline payload, bool is_write);
+bool pesim_enqueue_with_data(PESim_body *sim, uint64_t addr, PESim_payload payload, bool is_write);
 
 double pesim_clock_period(PESim_body *sim);
 unsigned int pesim_queue_size(PESim_body *sim);
@@ -104,8 +107,9 @@ pub struct PEsim_rs_MemReq {
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct PESim_cacheline {
+pub struct PESim_payload {
     pub dword_payload: [u64; 8],
+    pub payload_sz_bytes: u32,
 }
 
 pub struct PESim_body {
@@ -143,17 +147,6 @@ fn with_body_mut<T: Copy>(
     .unwrap_or(fallback)
 }
 
-fn with_body_mut_void(sim: *mut PESim_body, f: impl FnOnce(&mut PESim_body)) {
-    if sim.is_null() {
-        return;
-    }
-
-    let _ = catch_unwind(AssertUnwindSafe(|| {
-        // SAFETY: Same ownership contract as with_body_mut.
-        f(unsafe { &mut *sim });
-    }));
-}
-
 #[unsafe(no_mangle)]
 pub extern "C" fn pesim_new() -> *mut PESim_body {
     match catch_unwind(AssertUnwindSafe(|| {
@@ -188,7 +181,7 @@ pub extern "C" fn pesim_free(sim: *mut PESim_body) {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn pesim_print_stats(sim: *mut PESim_body) {
-    with_body_mut_void(sim, |body| {
+    with_body_mut(sim, (), |body| {
         println!(
             "PESim stats: ticks={}, enqueued={}, completions_returned={}",
             body.ticks, body.enqueued, body.completions_returned
@@ -198,7 +191,7 @@ pub extern "C" fn pesim_print_stats(sim: *mut PESim_body) {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn pesim_reset_stats(sim: *mut PESim_body) {
-    with_body_mut_void(sim, |body| {
+    with_body_mut(sim, (), |body| {
         body.ticks = 0;
         body.enqueued = 0;
         body.completions_returned = 0;
@@ -207,23 +200,43 @@ pub extern "C" fn pesim_reset_stats(sim: *mut PESim_body) {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn pesim_canAccept(sim: *mut PESim_body, addr: u64, is_write: bool) -> bool {
-    with_body_mut(sim, false, |body| body.sim.canAccept(addr, is_write))
+    with_body_mut(sim, false, |body| {
+        assert!(
+            addr >= MEM_BEGIN,
+            "gem5 request address must be at or above MEM_BEGIN"
+        );
+        body.sim.canAccept(addr - MEM_BEGIN, is_write)
+    })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn pesim_enqueue_with_data(
     sim: *mut PESim_body,
     addr: u64,
-    payload: PESim_cacheline,
+    payload: PESim_payload,
     is_write: bool,
 ) -> bool {
     with_body_mut(sim, false, |body| {
-        if !body.sim.canAccept(addr, is_write) {
+        assert!(
+            addr >= MEM_BEGIN,
+            "gem5 request address must be at or above MEM_BEGIN"
+        );
+        assert!(
+            payload.payload_sz_bytes as usize <= std::mem::size_of_val(&payload.dword_payload),
+            "PESim payload cannot exceed 64 bytes"
+        );
+        let sim_addr = addr - MEM_BEGIN;
+
+        if !body.sim.canAccept(sim_addr, is_write) {
             return false;
         }
 
-        body.sim
-            .enqueue_with_data(addr, payload.dword_payload, is_write);
+        body.sim.enqueue_with_data(
+            sim_addr,
+            payload.dword_payload,
+            payload.payload_sz_bytes,
+            is_write,
+        );
         body.enqueued += 1;
         true
     })
@@ -260,7 +273,7 @@ pub extern "C" fn pesim_get_complete(sim: *mut PESim_body) -> PEsim_rs_MemReq {
         // TODO: expose completion payload through the FFI result. OP_CGO_QUERY writes
         // its 0/1 result into dram_req.payload[0], but PEsim_rs_MemReq cannot return it yet.
         PEsim_rs_MemReq {
-            addr: req.get_addr(),
+            addr: req.get_addr() + MEM_BEGIN,
             issue_time: req.get_issue_time().unwrap_or(0),
             is_write: !req.is_read(),
         }
@@ -269,7 +282,7 @@ pub extern "C" fn pesim_get_complete(sim: *mut PESim_body) -> PEsim_rs_MemReq {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn pesim_tick(sim: *mut PESim_body) {
-    with_body_mut_void(sim, |body| {
+    with_body_mut(sim, (), |body| {
         body.sim.tick();
         body.ticks += 1;
     });
