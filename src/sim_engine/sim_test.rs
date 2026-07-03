@@ -22,8 +22,12 @@ impl Sim {
             }
             std::collections::hash_map::Entry::Vacant(ent) => {
                 let mut engine = match cfg {
-                    engine_cfg::CGO { ch, ra, bg, ba } => Engine::new_cgo_at(ch, ra, bg, ba),
-                    engine_cfg::FGO { ch, ra, bg, ba } => Engine::new_fgo_at(ch, ra, bg, ba),
+                    engine_cfg::CGO { ch, ra, bg, ba, pb } => {
+                        Engine::new_cgo_at(ch, ra, bg, ba, pb)
+                    }
+                    engine_cfg::FGO { ch, ra, bg, ba, pb } => {
+                        Engine::new_fgo_at(ch, ra, bg, ba, pb)
+                    }
                 };
                 engine
                     .set_scheduling_mode(scheduling_mode)
@@ -41,6 +45,7 @@ impl Sim {
             ra: addr_bulk.rank,
             bg: addr_bulk.bank_group,
             ba: addr_bulk.bank,
+            pb: addr_bulk.bank_local_addr / crate::sim_engine::engine_alloc::PSEUDO_BANK_CACHELINES,
         }
     }
 
@@ -393,6 +398,7 @@ fn sim_engine_cfg_selects_processor_but_not_scheduling_policy() {
         ra: 0,
         bg: 0,
         ba: 0,
+        pb: 0,
     };
 
     sim.add_engines(fgo_cfg);
@@ -567,6 +573,7 @@ fn sim_routes_encoded_request_to_pe_and_returns_dram_req_completion() {
         ra: 0,
         bg: 0,
         ba: 0,
+        pb: 0,
     };
     sim.add_engines(cfg);
     sim.set_engine_scheduling_mode(cfg, EngineSchedulingMode::Host_FGO_share)
@@ -607,6 +614,7 @@ fn sim_mirrors_host_cacheline_into_FGO_flat_memory_before_first_command() {
         ra: 0,
         bg: 0,
         ba: 0,
+        pb: 0,
     };
     sim.add_engine_with_scheduling_for_test(cfg, EngineSchedulingMode::Host_FGO_share);
 
@@ -629,6 +637,82 @@ fn sim_mirrors_host_cacheline_into_FGO_flat_memory_before_first_command() {
 }
 
 #[test]
+fn sim_routes_host_initialization_to_distinct_pseudo_banks() {
+    use crate::sim_engine::engine_alloc::PHY_BANK_SZ;
+
+    let mut sim = Sim::new();
+    sim.set_mode_for_test(SimMode::Pim);
+    let first_cfg = engine_cfg::FGO {
+        ch: 0,
+        ra: 0,
+        bg: 0,
+        ba: 0,
+        pb: 0,
+    };
+    let second_cfg = engine_cfg::FGO {
+        ch: 0,
+        ra: 0,
+        bg: 0,
+        ba: 0,
+        pb: 1,
+    };
+    sim.add_engine_with_scheduling_for_test(first_cfg, EngineSchedulingMode::Host_FGO_share);
+    sim.add_engine_with_scheduling_for_test(second_cfg, EngineSchedulingMode::Host_FGO_share);
+
+    let logical_bank_base = sim.dsim3.exact_local_to_global_addr(0, 0, 0, 0, 0, 0);
+    let first_addr = logical_bank_base;
+    let second_addr = logical_bank_base + PHY_BANK_SZ;
+
+    let make_payload = |vector: [i16; 8]| {
+        let mut bytes = [0_u8; 64];
+        for (lane, value) in vector.into_iter().enumerate() {
+            bytes[lane * 2..lane * 2 + 2].copy_from_slice(&value.to_le_bytes());
+        }
+        std::array::from_fn(|idx| {
+            u64::from_le_bytes(bytes[idx * 8..idx * 8 + 8].try_into().unwrap())
+        })
+    };
+    let first_vector = [1, 2, 3, 4, 5, 6, 7, 8];
+    let second_vector = [11, 12, 13, 14, 15, 16, 17, 18];
+
+    assert!(sim.canAccept(first_addr, true));
+    sim.enqueue_with_data(first_addr, make_payload(first_vector), 64, true);
+    assert!(sim.canAccept(second_addr, true));
+    sim.enqueue_with_data(second_addr, make_payload(second_vector), 64, true);
+
+    assert_eq!(sim.get_engine_cfg(first_addr), Some(first_cfg));
+    assert_eq!(
+        sim.get_engine_cfg(first_addr + PHY_BANK_SZ - 64),
+        Some(first_cfg)
+    );
+    assert_eq!(sim.get_engine_cfg(second_addr), Some(second_cfg));
+
+    let (cmd_addr, cmd_payload) = encode_fgo_cmd(pe_inst::LD128 { vRD: 1, addr: 0 });
+    assert!(sim.canAccept(cmd_addr, true));
+    sim.enqueue_with_data(cmd_addr, cmd_payload, 8, true);
+
+    let completions = drain_until_completions(&mut sim, 3);
+    assert_completed_requests_match(
+        &completions,
+        &[(first_addr, true), (second_addr, true), (cmd_addr, true)],
+    );
+    assert_eq!(
+        sim.engine_mut_for_test(first_cfg)
+            .get_pe()
+            .get_Arf()
+            .read_vRF(1),
+        first_vector
+    );
+    assert_eq!(
+        sim.engine_mut_for_test(second_cfg)
+            .get_pe()
+            .get_Arf()
+            .read_vRF(1),
+        second_vector
+    );
+}
+
+#[test]
 fn sim_broadcasts_encoded_request_and_returns_one_host_completion() {
     let mut sim = Sim::new();
     sim.set_mode_for_test(SimMode::Pim);
@@ -637,18 +721,21 @@ fn sim_broadcasts_encoded_request_and_returns_one_host_completion() {
         ra: 0,
         bg: 0,
         ba: 0,
+        pb: 0,
     };
     let second_cfg = engine_cfg::FGO {
         ch: 0,
         ra: 0,
         bg: 0,
-        ba: 1,
+        ba: 0,
+        pb: 1,
     };
     let cgo_cfg = engine_cfg::CGO {
         ch: 0,
         ra: 0,
         bg: 0,
         ba: 2,
+        pb: 0,
     };
 
     sim.add_engine_with_scheduling_for_test(first_cfg, EngineSchedulingMode::Host_FGO_share);
@@ -696,18 +783,21 @@ fn sim_broadcasts_cgo_commands_only_to_cgo_engines() {
         ra: 0,
         bg: 0,
         ba: 0,
+        pb: 0,
     };
     let second_cgo = engine_cfg::CGO {
         ch: 0,
         ra: 0,
         bg: 0,
         ba: 1,
+        pb: 0,
     };
     let fgo_cfg = engine_cfg::FGO {
         ch: 0,
         ra: 0,
         bg: 0,
         ba: 2,
+        pb: 0,
     };
     sim.add_engine_with_scheduling_for_test(first_cgo, EngineSchedulingMode::CGO_only);
     sim.add_engine_with_scheduling_for_test(second_cgo, EngineSchedulingMode::CGO_only);
@@ -749,7 +839,8 @@ fn sim_broadcasts_cgo_commands_only_to_cgo_engines() {
 fn sim_handles_cgo_alloc_as_next_cycle_control_completion() {
     let mut sim = Sim::new();
     sim.set_mode_for_test(SimMode::Pim);
-    let expected_engines = 2;
+    let expected_engines =
+        2 * crate::sim_engine::engine_alloc::PSEUDO_BANKS_PER_LOGICAL_BANK as usize;
     let (addr, payload) = encode_pim_cmd(pim_cmd::Ctrl_CGO_Alloc { asid: 0x111 });
 
     assert!(sim.canAccept(addr, true));
@@ -770,12 +861,14 @@ fn sim_handles_cgo_alloc_as_next_cycle_control_completion() {
         ra: 0,
         bg: 0,
         ba: 1,
+        pb: 0,
     }));
     assert!(sim.engines.contains_key(&engine_cfg::CGO {
         ch: 0,
         ra: 0,
         bg: 0,
         ba: 2,
+        pb: crate::sim_engine::engine_alloc::PSEUDO_BANKS_PER_LOGICAL_BANK - 1,
     }));
 }
 
@@ -783,7 +876,8 @@ fn sim_handles_cgo_alloc_as_next_cycle_control_completion() {
 fn sim_completes_bad_alloc_direction_without_allocating() {
     let mut sim = Sim::new();
     sim.set_mode_for_test(SimMode::Pim);
-    let expected_engines = 2;
+    let expected_engines =
+        2 * crate::sim_engine::engine_alloc::PSEUDO_BANKS_PER_LOGICAL_BANK as usize;
     let (bad_addr, bad_payload) = encode_pim_cmd(pim_cmd::Ctrl_CGO_Alloc { asid: 0x111 });
 
     assert!(sim.canAccept(bad_addr, false));
@@ -832,7 +926,8 @@ fn sim_cgo_alloc_scheduling_mode_is_configurable_to_cgo_modes_only() {
 fn sim_alloc_winner_takes_all_and_second_asid_gets_empty_allocation() {
     let mut sim = Sim::new();
     sim.set_mode_for_test(SimMode::Pim);
-    let expected_engines = 2;
+    let expected_engines =
+        2 * crate::sim_engine::engine_alloc::PSEUDO_BANKS_PER_LOGICAL_BANK as usize;
 
     let (first_addr, first_payload) = encode_pim_cmd(pim_cmd::Ctrl_FGO_Alloc { asid: 0x111 });
     sim.enqueue_with_data(first_addr, first_payload, 8, true);
@@ -856,12 +951,14 @@ fn sim_alloc_winner_takes_all_and_second_asid_gets_empty_allocation() {
         ra: 0,
         bg: 0,
         ba: 1,
+        pb: 0,
     }));
     assert!(sim.engines.contains_key(&engine_cfg::FGO {
         ch: 0,
         ra: 0,
         bg: 0,
         ba: 2,
+        pb: crate::sim_engine::engine_alloc::PSEUDO_BANKS_PER_LOGICAL_BANK - 1,
     }));
 }
 
@@ -876,7 +973,10 @@ fn sim_FGO_alloc_then_NOP_returns_exactly_one_completion() {
     let allocation = sim
         .getComplete()
         .expect("FGO allocation should complete on the next tick");
-    assert_eq!(allocation.get_payload()[0], 2);
+    assert_eq!(
+        allocation.get_payload()[0],
+        2 * crate::sim_engine::engine_alloc::PSEUDO_BANKS_PER_LOGICAL_BANK
+    );
     assert!(!sim.hasComplete());
 
     let (nop_addr, nop_payload) = encode_fgo_cmd(pe_inst::NOP);
@@ -903,6 +1003,7 @@ fn sim_keeps_engine_completions_out_of_dsim3_completion_queue() {
         ra: 0,
         bg: 0,
         ba: 0,
+        pb: 0,
     };
     sim.add_engine_with_scheduling_for_test(cfg, EngineSchedulingMode::Host_FGO_share);
 
@@ -997,6 +1098,7 @@ fn sim_completes_wrong_pim_command_direction_without_execution() {
         ra: 0,
         bg: 0,
         ba: 0,
+        pb: 0,
     };
     sim.add_engine_with_scheduling_for_test(cfg, EngineSchedulingMode::Host_FGO_share);
     sim.engine_mut_for_test(cfg)
@@ -1038,6 +1140,7 @@ fn sim_completes_non_eight_byte_pim_commands_without_execution() {
         ra: 0,
         bg: 0,
         ba: 0,
+        pb: 0,
     };
     sim.add_engine_with_scheduling_for_test(cfg, EngineSchedulingMode::Host_FGO_share);
     sim.engine_mut_for_test(cfg)
@@ -1176,6 +1279,7 @@ fn sim_FGO_host_together() {
         ra: 0,
         bg: 0,
         ba: 0,
+        pb: 0,
     };
     sim.add_engines(cfg);
     sim.set_engine_scheduling_mode(cfg, EngineSchedulingMode::Host_FGO_share)

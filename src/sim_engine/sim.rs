@@ -45,17 +45,40 @@ use crate::dsim3_paths;
 use crate::memory::dramsim3_wrapper::dramsim3_wrapper;
 use crate::memory::mem_portal::{cacheline_payload, dram_req};
 use crate::sim_engine::engine::{Engine, EngineRequest, EngineSchedulingMode};
-use crate::sim_engine::engine_alloc::engine_alloc;
-use crate::sim_engine::request_router::{decode_pim_cmd, pim_cmd};
+use crate::sim_engine::engine_alloc::{
+    LOGICAL_BANK_SZ, PSEUDO_BANK_CACHELINES, PSEUDO_BANKS_PER_LOGICAL_BANK, engine_alloc,
+};
+use crate::sim_engine::request_router::{PIM_CMD_PAGE_BASE, decode_pim_cmd, pim_cmd};
 use crate::sim_engine::timing_harness::timing_harness;
 use std::collections::HashMap;
 
 const PIM_CMD_PAYLOAD_SIZE_BYTES: u32 = std::mem::size_of::<u64>() as u32;
 
-#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum engine_cfg {
-    CGO { ch: u64, ra: u64, bg: u64, ba: u64 },
-    FGO { ch: u64, ra: u64, bg: u64, ba: u64 },
+    CGO {
+        ch: u64,
+        ra: u64,
+        bg: u64,
+        ba: u64,
+        pb: u64,
+    },
+    FGO {
+        ch: u64,
+        ra: u64,
+        bg: u64,
+        ba: u64,
+        pb: u64,
+    },
+}
+
+impl engine_cfg {
+    fn other_processor(self) -> Self {
+        match self {
+            engine_cfg::CGO { ch, ra, bg, ba, pb } => engine_cfg::FGO { ch, ra, bg, ba, pb },
+            engine_cfg::FGO { ch, ra, bg, ba, pb } => engine_cfg::CGO { ch, ra, bg, ba, pb },
+        }
+    }
 }
 
 pub enum SimMode {
@@ -84,6 +107,7 @@ impl Sim {
         let mut dsim3_inst = dramsim3_wrapper::new(cfg_path, out_dir, 0, 0, 0, 0);
         dsim3_inst.SetPimMode(false); //Set dsim3 as non-pim as it handle normal traces
         let allocator = engine_alloc::new(0..1, 0..1, 0..1, 1..3);
+        Self::validate_pim_region(&mut dsim3_inst, &allocator);
 
         Self {
             engines: HashMap::new(),
@@ -101,17 +125,95 @@ impl Sim {
     }
 
     pub fn add_engines(&mut self, cfg: engine_cfg) {
+        if self.engines.contains_key(&cfg.other_processor()) {
+            panic!("Cannot add engine: pseudo bank is already owned by another processor type");
+        }
+
         match self.engines.entry(cfg) {
             std::collections::hash_map::Entry::Occupied(_) => {
                 panic!("Cannot add engine with given cfg: already existed");
             }
             std::collections::hash_map::Entry::Vacant(ent) => {
                 let engine = match cfg {
-                    engine_cfg::CGO { ch, ra, bg, ba } => Engine::new_cgo_at(ch, ra, bg, ba),
-                    engine_cfg::FGO { ch, ra, bg, ba } => Engine::new_fgo_at(ch, ra, bg, ba),
+                    engine_cfg::CGO { ch, ra, bg, ba, pb } => {
+                        Engine::new_cgo_at(ch, ra, bg, ba, pb)
+                    }
+                    engine_cfg::FGO { ch, ra, bg, ba, pb } => {
+                        Engine::new_fgo_at(ch, ra, bg, ba, pb)
+                    }
                 };
                 ent.insert(engine);
             }
+        }
+    }
+
+    fn validate_pim_region(dsim3: &mut dramsim3_wrapper, allocator: &engine_alloc) {
+        let logical_banks = allocator.logical_banks();
+        assert!(
+            !logical_banks.is_empty(),
+            "PIM logical-bank region is empty"
+        );
+
+        let channels = dsim3.get_channels();
+        let ranks = dsim3.get_ranks();
+        let bank_groups = dsim3.get_bankgroups_per_rank();
+        let banks_per_group = dsim3.get_banks_per_bg();
+        let command_bank = dsim3.global_addr_to_local_components(PIM_CMD_PAGE_BASE);
+        let mut bases = Vec::new();
+
+        for &(ch, ra, bg, ba) in &logical_banks {
+            assert!(
+                ch < channels,
+                "PIM region channel {ch} is outside DRAM geometry"
+            );
+            assert!(ra < ranks, "PIM region rank {ra} is outside DRAM geometry");
+            assert!(
+                bg < bank_groups,
+                "PIM region bank group {bg} is outside DRAM geometry"
+            );
+            assert!(
+                ba < banks_per_group,
+                "PIM region bank {ba} is outside DRAM geometry"
+            );
+            assert!(
+                (ch, ra, bg, ba)
+                    != (
+                        command_bank.channel,
+                        command_bank.rank,
+                        command_bank.bank_group,
+                        command_bank.bank,
+                    ),
+                "PIM region cannot include the logical bank containing the PIM command page"
+            );
+
+            let base = dsim3.exact_local_to_global_addr(ch, ra, bg, ba, 0, 0);
+            let last = base
+                .checked_add(LOGICAL_BANK_SZ - 64)
+                .expect("PIM logical-bank address range overflow");
+            let first_location = dsim3.global_addr_to_local_components(base);
+            let last_location = dsim3.global_addr_to_local_components(last);
+            for location in [first_location, last_location] {
+                assert_eq!(
+                    (
+                        location.channel,
+                        location.rank,
+                        location.bank_group,
+                        location.bank
+                    ),
+                    (ch, ra, bg, ba),
+                    "configured logical-bank range is not contiguous under the active address mapping"
+                );
+            }
+            bases.push(base);
+        }
+
+        bases.sort_unstable();
+        for pair in bases.windows(2) {
+            assert_eq!(
+                pair[1] - pair[0],
+                LOGICAL_BANK_SZ,
+                "configured PIM logical banks are not contiguous"
+            );
         }
     }
 
@@ -209,17 +311,23 @@ impl Sim {
     // This function returns None when no enabled engine owns this address.
     fn get_engine_cfg(&mut self, addr: u64) -> Option<engine_cfg> {
         let addr_bulk = self.dsim3.global_addr_to_local_components(addr);
+        let pb = addr_bulk.bank_local_addr / PSEUDO_BANK_CACHELINES;
+        if pb >= PSEUDO_BANKS_PER_LOGICAL_BANK {
+            return None;
+        }
         let cgo_cfg = engine_cfg::CGO {
             ch: addr_bulk.channel,
             ra: addr_bulk.rank,
             bg: addr_bulk.bank_group,
             ba: addr_bulk.bank,
+            pb,
         };
         let fgo_cfg = engine_cfg::FGO {
             ch: addr_bulk.channel,
             ra: addr_bulk.rank,
             bg: addr_bulk.bank_group,
             ba: addr_bulk.bank,
+            pb,
         };
 
         if self.engines.contains_key(&cgo_cfg) {

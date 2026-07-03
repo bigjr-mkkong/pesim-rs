@@ -4,6 +4,9 @@ use crate::dsim3_paths;
 use crate::memory::dramsim3_wrapper::dramsim3_wrapper;
 use crate::memory::flat_memory::PIM_ENTRIES_PER_CACHELINE;
 use crate::memory::mem_portal::{cacheline_payload, dram_portal, dram_req, portal_mode};
+use crate::sim_engine::engine_alloc::{
+    PSEUDO_BANK_CACHELINES, PSEUDO_BANK_ENTRIES, PSEUDO_BANKS_PER_LOGICAL_BANK,
+};
 use crate::sim_engine::request_router::{pim_cmd, validate_pim_cmd_access};
 use std::collections::VecDeque;
 #[cfg(test)]
@@ -64,6 +67,12 @@ pub(crate) struct EngineRequest {
 // and then gives the other source priority.
 
 pub struct Engine {
+    ch: u64,
+    ra: u64,
+    bg: u64,
+    ba: u64,
+    pseudo_bank: u64,
+    pseudo_bank_base_cacheline: u64,
     processor: EngineProcessor,
     host_pool: VecDeque<dram_req>,
     host_complete_queue: VecDeque<dram_req>,
@@ -97,31 +106,33 @@ pub struct Engine {
 impl Engine {
     #[cfg(test)]
     pub fn new_cgo() -> Self {
-        Self::new_cgo_at(0, 0, 0, 0)
+        Self::new_cgo_at(0, 0, 0, 0, 0)
     }
 
     #[cfg(test)]
     pub fn new_fgo() -> Self {
-        Self::new_fgo_at(0, 0, 0, 0)
+        Self::new_fgo_at(0, 0, 0, 0, 0)
     }
 
-    pub(crate) fn new_cgo_at(ch: u64, ra: u64, bg: u64, ba: u64) -> Self {
+    pub(crate) fn new_cgo_at(ch: u64, ra: u64, bg: u64, ba: u64, pb: u64) -> Self {
         Self::build(
             |dram_port| EngineProcessor::CGO(CPU::new_with_dram_port(dram_port)),
             ch,
             ra,
             bg,
             ba,
+            pb,
         )
     }
 
-    pub(crate) fn new_fgo_at(ch: u64, ra: u64, bg: u64, ba: u64) -> Self {
+    pub(crate) fn new_fgo_at(ch: u64, ra: u64, bg: u64, ba: u64, pb: u64) -> Self {
         Self::build(
             |dram_port| EngineProcessor::FGO(PE::new_with_dram_port(dram_port)),
             ch,
             ra,
             bg,
             ba,
+            pb,
         )
     }
 
@@ -131,16 +142,40 @@ impl Engine {
         ra: u64,
         bg: u64,
         ba: u64,
+        pb: u64,
     ) -> Self {
+        assert!(
+            pb < PSEUDO_BANKS_PER_LOGICAL_BANK,
+            "invalid pseudo-bank index"
+        );
+        let pseudo_bank_base_cacheline = pb
+            .checked_mul(PSEUDO_BANK_CACHELINES)
+            .expect("pseudo-bank base overflow");
         let mut dram_port = dram_portal::new();
         dram_port.set_mode(portal_mode::PIM);
         let processor = make_processor(dram_port.clone());
 
         let (cfg_path, out_dir) = dsim3_paths();
-        let mut dsim3 = dramsim3_wrapper::new(cfg_path, out_dir, ch, ra, bg, ba);
+        let mut dsim3 = dramsim3_wrapper::new_for_pseudo_bank(
+            cfg_path,
+            out_dir,
+            ch,
+            ra,
+            bg,
+            ba,
+            pb,
+            pseudo_bank_base_cacheline,
+            PSEUDO_BANK_CACHELINES,
+        );
         dsim3.SetPimMode(true);
 
         Self {
+            ch,
+            ra,
+            bg,
+            ba,
+            pseudo_bank: pb,
+            pseudo_bank_base_cacheline,
             processor,
             dram_port,
             host_pool: VecDeque::new(),
@@ -559,8 +594,22 @@ impl Engine {
         }
 
         let local_addr = self.dsim3.global_addr_to_local_components(global_addr);
-        let first_entry = local_addr
+        assert_eq!(
+            (
+                local_addr.channel,
+                local_addr.rank,
+                local_addr.bank_group,
+                local_addr.bank
+            ),
+            (self.ch, self.ra, self.bg, self.ba),
+            "host write was routed to the wrong logical bank"
+        );
+        let pseudo_local_cacheline = local_addr
             .bank_local_addr
+            .checked_sub(self.pseudo_bank_base_cacheline)
+            .filter(|offset| *offset < PSEUDO_BANK_CACHELINES)
+            .expect("host write was routed to the wrong pseudo bank");
+        let first_entry = pseudo_local_cacheline
             .checked_mul(PIM_ENTRIES_PER_CACHELINE)
             .and_then(|addr| u32::try_from(addr).ok())
             .expect("bank-local address exceeds PIM flat-memory address space");
@@ -582,6 +631,7 @@ impl Engine {
         if !self.can_accept_pim_cmd(cmd, !req.is_read()) {
             panic!("cannot route PIM command to this engine");
         }
+        self.validate_pim_command_bounds(cmd);
 
         match (&mut self.processor, cmd) {
             (EngineProcessor::FGO(pe), pim_cmd::FGO(instruction)) => {
@@ -597,6 +647,37 @@ impl Engine {
             }
             _ => unreachable!("PIM command compatibility was checked before enqueue"),
         }
+    }
+
+    fn validate_pim_command_bounds(&self, cmd: pim_cmd) {
+        let pim_cmd::FGO(instruction) = cmd else {
+            return;
+        };
+        let (operation, addr) = match instruction {
+            crate::PE::types::inst::LD128 { addr, .. } => ("LD128", addr),
+            crate::PE::types::inst::ST128 { addr, .. } => ("ST128", addr),
+            crate::PE::types::inst::LD32 { addr, .. } => ("LD32", addr),
+            crate::PE::types::inst::ST32 { addr, .. } => ("ST32", addr),
+            _ => return,
+        };
+
+        if u64::from(addr) >= PSEUDO_BANK_ENTRIES {
+            self.fatal_pim_oob(operation, u64::from(addr));
+        }
+    }
+
+    #[cold]
+    fn fatal_pim_oob(&self, operation: &str, addr: u64) -> ! {
+        eprintln!(
+            "PIM_FATAL reason=address_out_of_bounds operation={operation} ch={} rank={} bank_group={} bank={} pseudo_bank={} address={} valid_entries=0..{}",
+            self.ch, self.ra, self.bg, self.ba, self.pseudo_bank, addr, PSEUDO_BANK_ENTRIES
+        );
+
+        #[cfg(test)]
+        panic!("PIM address is outside its pseudo bank");
+
+        #[cfg(not(test))]
+        std::process::abort();
     }
 
     pub(crate) fn canAccept(&mut self, request: EngineRequest) -> bool {

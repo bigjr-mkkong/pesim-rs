@@ -37,14 +37,14 @@ impl timing_harness {
         req_id: u64,
         instruction: FGO_inst,
     ) {
-        let (ch, ra, bg, ba) = FGO_coordinates(cfg);
+        let (ch, ra, bg, ba, pb) = FGO_coordinates(cfg);
         self.FGO_states.entry(cfg).or_insert(FGO_harness_state {
             start_cycle: cycle,
             ..FGO_harness_state::default()
         });
 
         println!(
-            "FGO_TRACE event=receive ch={ch} rank={ra} bank_group={bg} bank={ba} cycle={cycle} req_id={req_id} instruction={}",
+            "FGO_TRACE event=receive ch={ch} rank={ra} bank_group={bg} bank={ba} pseudo_bank={pb} cycle={cycle} req_id={req_id} instruction={}",
             describe_FGO_instruction(instruction)
         );
     }
@@ -57,13 +57,13 @@ impl timing_harness {
         addr: u32,
         output: Option<[i16; 8]>,
     ) {
-        let (ch, ra, bg, ba) = FGO_coordinates(cfg);
+        let (ch, ra, bg, ba, pb) = FGO_coordinates(cfg);
         let all_zero = output
             .map(|vector| vector.iter().all(|element| *element == 0))
             .unwrap_or(true);
         let state = self.FGO_states.entry(cfg).or_insert_with(|| {
             eprintln!(
-                "FGO_HARNESS_ERROR ch={ch} rank={ra} bank_group={bg} bank={ba} result retired without a received command"
+                "FGO_HARNESS_ERROR ch={ch} rank={ra} bank_group={bg} bank={ba} pseudo_bank={pb} result retired without a received command"
             );
             FGO_harness_state {
                 start_cycle: cycle,
@@ -76,7 +76,7 @@ impl timing_harness {
         }
 
         println!(
-            "FGO_RESULT ch={ch} rank={ra} bank_group={bg} bank={ba} cycle={cycle} req_id={req_id} addr={addr} all_zero={all_zero} status={}",
+            "FGO_RESULT ch={ch} rank={ra} bank_group={bg} bank={ba} pseudo_bank={pb} cycle={cycle} req_id={req_id} addr={addr} output={output:?} all_zero={all_zero} status={}",
             if all_zero { "FAIL" } else { "PASS" }
         );
     }
@@ -88,9 +88,9 @@ impl timing_harness {
         req_id: u64,
         instruction: FGO_inst,
     ) -> Option<FGO_harness_summary> {
-        let (ch, ra, bg, ba) = FGO_coordinates(cfg);
+        let (ch, ra, bg, ba, pb) = FGO_coordinates(cfg);
         println!(
-            "FGO_TRACE event=retire ch={ch} rank={ra} bank_group={bg} bank={ba} cycle={cycle} req_id={req_id} instruction={}",
+            "FGO_TRACE event=retire ch={ch} rank={ra} bank_group={bg} bank={ba} pseudo_bank={pb} cycle={cycle} req_id={req_id} instruction={}",
             describe_FGO_instruction(instruction)
         );
 
@@ -100,7 +100,7 @@ impl timing_harness {
 
         let state = self.FGO_states.remove(&cfg).unwrap_or_else(|| {
             eprintln!(
-                "FGO_HARNESS_ERROR ch={ch} rank={ra} bank_group={bg} bank={ba} NOP retired without a received command"
+                "FGO_HARNESS_ERROR ch={ch} rank={ra} bank_group={bg} bank={ba} pseudo_bank={pb} NOP retired without a received command"
             );
             FGO_harness_state {
                 start_cycle: cycle,
@@ -119,7 +119,7 @@ impl timing_harness {
         };
 
         println!(
-            "FGO_TIMING ch={ch} rank={ra} bank_group={bg} bank={ba} start_cycle={} end_cycle={} elapsed_cycles={} vector_stores={} passing_vector_stores={} result_status={}",
+            "FGO_TIMING ch={ch} rank={ra} bank_group={bg} bank={ba} pseudo_bank={pb} start_cycle={} end_cycle={} elapsed_cycles={} vector_stores={} passing_vector_stores={} result_status={}",
             summary.start_cycle,
             summary.end_cycle,
             summary.elapsed_cycles,
@@ -136,9 +136,9 @@ impl timing_harness {
     }
 }
 
-fn FGO_coordinates(cfg: engine_cfg) -> (u64, u64, u64, u64) {
+fn FGO_coordinates(cfg: engine_cfg) -> (u64, u64, u64, u64, u64) {
     match cfg {
-        engine_cfg::FGO { ch, ra, bg, ba } => (ch, ra, bg, ba),
+        engine_cfg::FGO { ch, ra, bg, ba, pb } => (ch, ra, bg, ba, pb),
         engine_cfg::CGO { .. } => panic!("FGO harness received a CGO engine configuration"),
     }
 }
@@ -178,6 +178,7 @@ mod tests {
         ra: 0,
         bg: 1,
         ba: 2,
+        pb: 3,
     };
 
     #[test]

@@ -139,6 +139,10 @@ where
             backing[..8].copy_from_slice(&payload[first_dword].to_le_bytes());
             backing[8..].copy_from_slice(&payload[first_dword + 1].to_le_bytes());
 
+            // for (idx, dat) in backing.iter().enumerate() {
+            //     println!("bytes {} is {}", idx, dat);
+            // }
+
             let addr = first_entry
                 .checked_add(entry_offset as u32)
                 .expect("host cacheline exceeds PIM flat-memory address space");

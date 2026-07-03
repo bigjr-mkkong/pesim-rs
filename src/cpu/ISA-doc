@@ -32,6 +32,20 @@ Format:
 [OP] |[#inst-addr]                                 | //Jump
 [OP] |[rs1]      |[rs2]       |        |      | //EqualExit
 
+inst        |   OP
+ADD128      |   0001
+SUB128      |   0010
+MUL128      |   0011
+AND128      |   0100
+LD128       |   0101
+ST128       |   0110
+FatPtrLd    |   0111
+FatPtrSt    |   1000
+FatPtrAdd   |   1001
+FatPtrSub   |   1010
+Jump        |   1011
+EqualExit   |   1100
+
 
 fptr:
 4       28

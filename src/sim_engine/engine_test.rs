@@ -82,6 +82,7 @@ fn dramsim3_wrapper_test() {
 }
 
 use crate::PE::types::inst as pe_inst;
+use crate::sim_engine::engine_alloc::{PSEUDO_BANK_CACHELINES, PSEUDO_BANK_ENTRIES};
 use crate::sim_engine::request_router::{decode_pim_cmd, pim_cmd};
 use crate::sim_engine::request_router_test::{encode_fgo_cmd, encode_pim_cmd};
 
@@ -414,5 +415,39 @@ fn first_FGO_command_closes_host_initialization_mirroring() {
     assert_eq!(
         engine.get_pe().get_fmem().mem_read_v(4),
         Some([1, 2, 3, 4, 5, 6, 7, 8])
+    );
+}
+
+#[test]
+fn pseudo_bank_base_is_added_to_pim_timing_addresses() {
+    let pseudo_bank = 3;
+    let mut engine = Engine::new_fgo_at(0, 0, 0, 2, pseudo_bank);
+
+    let global_addr = engine.dsim3.request_addr_to_dram_addr_for_test(0, true);
+    let local_addr = engine.dsim3.global_addr_to_local_components(global_addr);
+
+    assert_eq!(local_addr.channel, 0);
+    assert_eq!(local_addr.rank, 0);
+    assert_eq!(local_addr.bank_group, 0);
+    assert_eq!(local_addr.bank, 2);
+    assert_eq!(
+        local_addr.bank_local_addr,
+        pseudo_bank * PSEUDO_BANK_CACHELINES
+    );
+}
+
+#[test]
+#[should_panic(expected = "PIM address is outside its pseudo bank")]
+fn fgo_memory_address_outside_pseudo_bank_is_fatal() {
+    let mut engine = Engine::new_fgo();
+    let instruction = pe_inst::LD128 {
+        vRD: 1,
+        addr: PSEUDO_BANK_ENTRIES as u32,
+    };
+    let (addr, payload) = encode_fgo_cmd(instruction);
+
+    engine.enqueue_host_pim_request(
+        dram_req::new_with_payload(addr, payload, false, false),
+        pim_cmd::FGO(instruction),
     );
 }

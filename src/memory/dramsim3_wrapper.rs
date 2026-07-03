@@ -11,6 +11,9 @@ pub struct dramsim3_wrapper {
     ra: u64,
     bg: u64,
     ba: u64,
+    pseudo_bank: Option<u64>,
+    pim_bank_local_base: u64,
+    pim_bank_local_size: Option<u64>,
     /*
      * Unique request ID to track precise complete order for each request
      */
@@ -30,6 +33,44 @@ impl dramsim3_wrapper {
         bg_: u64,
         ba_: u64,
     ) -> Self {
+        Self::build(cfg_path, out_dir, ch_, ra_, bg_, ba_, None, 0, None)
+    }
+
+    pub fn new_for_pseudo_bank(
+        cfg_path: impl AsRef<Path>,
+        out_dir: impl AsRef<Path>,
+        ch_: u64,
+        ra_: u64,
+        bg_: u64,
+        ba_: u64,
+        pseudo_bank: u64,
+        pim_bank_local_base: u64,
+        pim_bank_local_size: u64,
+    ) -> Self {
+        Self::build(
+            cfg_path,
+            out_dir,
+            ch_,
+            ra_,
+            bg_,
+            ba_,
+            Some(pseudo_bank),
+            pim_bank_local_base,
+            Some(pim_bank_local_size),
+        )
+    }
+
+    fn build(
+        cfg_path: impl AsRef<Path>,
+        out_dir: impl AsRef<Path>,
+        ch_: u64,
+        ra_: u64,
+        bg_: u64,
+        ba_: u64,
+        pseudo_bank: Option<u64>,
+        pim_bank_local_base: u64,
+        pim_bank_local_size: Option<u64>,
+    ) -> Self {
         let cfg_path = cfg_path
             .as_ref()
             .to_str()
@@ -47,6 +88,9 @@ impl dramsim3_wrapper {
             ra: ra_,
             bg: bg_,
             ba: ba_,
+            pseudo_bank,
+            pim_bank_local_base,
+            pim_bank_local_size,
             req_id: 0,
         }
     }
@@ -72,9 +116,42 @@ impl dramsim3_wrapper {
             row: 0,
             column: 0,
         };
-        addr_bulk.bank_local_addr = addr;
+        if let Some(size) = self.pim_bank_local_size
+            && addr >= size
+        {
+            self.fatal_pim_oob(addr, size);
+        }
+        addr_bulk.bank_local_addr = self
+            .pim_bank_local_base
+            .checked_add(addr)
+            .unwrap_or_else(|| self.fatal_pim_oob(addr, self.pim_bank_local_size.unwrap_or(0)));
 
         dramsim3_ext::BankLocalToGlobalAddr(self.ms.pin_mut(), &addr_bulk)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn request_addr_to_dram_addr_for_test(&mut self, addr: u64, is_pim: bool) -> u64 {
+        self.request_addr_to_dram_addr(addr, is_pim)
+    }
+
+    #[cold]
+    fn fatal_pim_oob(&self, addr: u64, size: u64) -> ! {
+        eprintln!(
+            "PIM_FATAL reason=timing_address_out_of_bounds ch={} rank={} bank_group={} bank={} pseudo_bank={} cacheline={} valid_cachelines=0..{}",
+            self.ch,
+            self.ra,
+            self.bg,
+            self.ba,
+            self.pseudo_bank.unwrap_or(0),
+            addr,
+            size
+        );
+
+        #[cfg(test)]
+        panic!("PIM timing address is outside its pseudo bank");
+
+        #[cfg(not(test))]
+        std::process::abort();
     }
 
     pub fn global_addr_to_local_components(&mut self, addr: u64) -> local_addr_bulk {
@@ -172,7 +249,7 @@ impl dramsim3_wrapper {
     }
 
     pub fn get_burst_length(&mut self) -> i32 {
-        let local_addr = local_addr_bulk{
+        let local_addr = local_addr_bulk {
             channel: 0,
             rank: 0,
             bank_group: 0,
