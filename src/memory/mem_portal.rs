@@ -58,6 +58,9 @@ impl dram_req {
         &self.payload
     }
 
+    //FIXME
+    //Normally, this function can only being used by test cases. Some sim.rs functions also used
+    //this one, check to see if they are correct
     pub(crate) fn set_payload_word0(&mut self, value: u64) {
         self.payload[0] = value;
     }

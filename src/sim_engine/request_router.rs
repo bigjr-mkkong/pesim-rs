@@ -3,16 +3,16 @@ use crate::memory::mem_portal::cacheline_payload;
 
 #[derive(Clone, Copy)]
 pub enum pim_cmd {
-    Fgo(pe_inst),
-    CgoStart,
-    CgoQuery,
+    FGO(pe_inst),
+    CGO_Start,
+    CGO_Query,
     Ctrl_CGO_Alloc { asid: u64 },
     Ctrl_FGO_Alloc { asid: u64 },
 }
 
 impl pim_cmd {
     pub fn expects_write(&self) -> bool {
-        !matches!(self, pim_cmd::CgoQuery)
+        !matches!(self, pim_cmd::CGO_Query)
     }
 }
 
@@ -77,50 +77,50 @@ pub fn decode_pim_cmd(
     let mem_addr = ((encoded >> MEM_ADDR_SHIFT) & MEM_ADDR_MASK) as u32;
 
     match opcode {
-        OP_NOP => Ok(Some(pim_cmd::Fgo(pe_inst::NOP))),
-        OP_ADD128 => Ok(Some(pim_cmd::Fgo(pe_inst::ADD128 {
+        OP_NOP => Ok(Some(pim_cmd::FGO(pe_inst::NOP))),
+        OP_ADD128 => Ok(Some(pim_cmd::FGO(pe_inst::ADD128 {
             vRD: reg_a,
             vRS0: reg_b,
             vRS1: reg_c,
         }))),
-        OP_SUB128 => Ok(Some(pim_cmd::Fgo(pe_inst::SUB128 {
+        OP_SUB128 => Ok(Some(pim_cmd::FGO(pe_inst::SUB128 {
             vRD: reg_a,
             vRS0: reg_b,
             vRS1: reg_c,
         }))),
-        OP_MUL128 => Ok(Some(pim_cmd::Fgo(pe_inst::MUL128 {
+        OP_MUL128 => Ok(Some(pim_cmd::FGO(pe_inst::MUL128 {
             vRD: reg_a,
             vRS0: reg_b,
             vRS1: reg_c,
         }))),
-        OP_MAC128 => Ok(Some(pim_cmd::Fgo(pe_inst::MAC128 {
+        OP_MAC128 => Ok(Some(pim_cmd::FGO(pe_inst::MAC128 {
             sRD: reg_a,
             sRS0: reg_d,
             vRS0: reg_b,
             vRS1: reg_c,
         }))),
-        OP_RELU => Ok(Some(pim_cmd::Fgo(pe_inst::ReLU {
+        OP_RELU => Ok(Some(pim_cmd::FGO(pe_inst::ReLU {
             vRD: reg_a,
             vRS0: reg_b,
         }))),
-        OP_LD128 => Ok(Some(pim_cmd::Fgo(pe_inst::LD128 {
+        OP_LD128 => Ok(Some(pim_cmd::FGO(pe_inst::LD128 {
             vRD: reg_a,
             addr: mem_addr,
         }))),
-        OP_ST128 => Ok(Some(pim_cmd::Fgo(pe_inst::ST128 {
+        OP_ST128 => Ok(Some(pim_cmd::FGO(pe_inst::ST128 {
             vRS: reg_a,
             addr: mem_addr,
         }))),
-        OP_LD32 => Ok(Some(pim_cmd::Fgo(pe_inst::LD32 {
+        OP_LD32 => Ok(Some(pim_cmd::FGO(pe_inst::LD32 {
             sRD: reg_a,
             addr: mem_addr,
         }))),
-        OP_ST32 => Ok(Some(pim_cmd::Fgo(pe_inst::ST32 {
+        OP_ST32 => Ok(Some(pim_cmd::FGO(pe_inst::ST32 {
             sRS: reg_a,
             addr: mem_addr,
         }))),
-        OP_CGO_START => Ok(Some(pim_cmd::CgoStart)),
-        OP_CGO_QUERY => Ok(Some(pim_cmd::CgoQuery)),
+        OP_CGO_START => Ok(Some(pim_cmd::CGO_Start)),
+        OP_CGO_QUERY => Ok(Some(pim_cmd::CGO_Query)),
         OP_CGO_ALLOC => Ok(Some(pim_cmd::Ctrl_CGO_Alloc { asid: encoded })),
         OP_FGO_ALLOC => Ok(Some(pim_cmd::Ctrl_FGO_Alloc { asid: encoded })),
         _ => Err("unknown PIM command opcode"),

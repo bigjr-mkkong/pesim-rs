@@ -2,7 +2,8 @@ use crate::CPU;
 use crate::PE::pe_top::PE;
 use crate::dsim3_paths;
 use crate::memory::dramsim3_wrapper::dramsim3_wrapper;
-use crate::memory::mem_portal::{dram_portal, dram_req, portal_mode};
+use crate::memory::flat_memory::PIM_ENTRIES_PER_CACHELINE;
+use crate::memory::mem_portal::{cacheline_payload, dram_portal, dram_req, portal_mode};
 use crate::sim_engine::request_router::{pim_cmd, validate_pim_cmd_access};
 use std::collections::VecDeque;
 #[cfg(test)]
@@ -39,14 +40,14 @@ enum EngineProcessor {
 }
 
 #[derive(Clone, Copy)]
-enum FgoRequestState {
+enum FGO_RequestState {
     Idle,
     PimInFlight,
     HostInFlight,
 }
 
 #[derive(Clone, Copy)]
-enum CgoCmd {
+enum CGO_Cmd {
     Start,
     Query,
 }
@@ -66,7 +67,7 @@ pub struct Engine {
     processor: EngineProcessor,
     host_pool: VecDeque<dram_req>,
     host_complete_queue: VecDeque<dram_req>,
-    cgo_cmd_queue: VecDeque<(CgoCmd, dram_req)>,
+    cgo_cmd_queue: VecDeque<(CGO_Cmd, dram_req)>,
     cgo_cmd_complete_queue: VecDeque<dram_req>,
     dram_port: dram_portal,
     dsim3: dramsim3_wrapper,
@@ -82,32 +83,61 @@ pub struct Engine {
     MEM_tick_rec: u64,
     first_host_switch_started: bool,
     //Following are F3FS scheduler internal variables
-    fgo_request_state: FgoRequestState,
+    fgo_request_state: FGO_RequestState,
     fgo_next_service: EngineMode,
     switch_delay_remaining: u64,
     switch_pause_cycles: u64,
     switch_resume_cycles: u64,
+    init_mirroring_enabled: bool,
     // Test-only pin-out. This field and all writes to it are absent from production builds.
     #[cfg(test)]
     scheduler_probe: AtomicU8,
 }
 
 impl Engine {
+    #[cfg(test)]
     pub fn new_cgo() -> Self {
-        Self::build(|dram_port| EngineProcessor::CGO(CPU::new_with_dram_port(dram_port)))
+        Self::new_cgo_at(0, 0, 0, 0)
     }
 
+    #[cfg(test)]
     pub fn new_fgo() -> Self {
-        Self::build(|dram_port| EngineProcessor::FGO(PE::new_with_dram_port(dram_port)))
+        Self::new_fgo_at(0, 0, 0, 0)
     }
 
-    fn build(make_processor: impl FnOnce(dram_portal) -> EngineProcessor) -> Self {
+    pub(crate) fn new_cgo_at(ch: u64, ra: u64, bg: u64, ba: u64) -> Self {
+        Self::build(
+            |dram_port| EngineProcessor::CGO(CPU::new_with_dram_port(dram_port)),
+            ch,
+            ra,
+            bg,
+            ba,
+        )
+    }
+
+    pub(crate) fn new_fgo_at(ch: u64, ra: u64, bg: u64, ba: u64) -> Self {
+        Self::build(
+            |dram_port| EngineProcessor::FGO(PE::new_with_dram_port(dram_port)),
+            ch,
+            ra,
+            bg,
+            ba,
+        )
+    }
+
+    fn build(
+        make_processor: impl FnOnce(dram_portal) -> EngineProcessor,
+        ch: u64,
+        ra: u64,
+        bg: u64,
+        ba: u64,
+    ) -> Self {
         let mut dram_port = dram_portal::new();
         dram_port.set_mode(portal_mode::PIM);
         let processor = make_processor(dram_port.clone());
 
         let (cfg_path, out_dir) = dsim3_paths();
-        let mut dsim3 = dramsim3_wrapper::new(cfg_path, out_dir, 0, 0, 0, 0);
+        let mut dsim3 = dramsim3_wrapper::new(cfg_path, out_dir, ch, ra, bg, ba);
         dsim3.SetPimMode(true);
 
         Self {
@@ -128,11 +158,12 @@ impl Engine {
             MEM_tick_rec: 0,
             first_host_switch_started: false,
             clock_cycle: 0,
-            fgo_request_state: FgoRequestState::Idle,
+            fgo_request_state: FGO_RequestState::Idle,
             fgo_next_service: EngineMode::PIM,
             switch_delay_remaining: 0,
             switch_pause_cycles: 0,
             switch_resume_cycles: 0,
+            init_mirroring_enabled: true,
             #[cfg(test)]
             scheduler_probe: AtomicU8::new(0),
         }
@@ -200,6 +231,17 @@ impl Engine {
         self.switch_resume_cycles = resume_cycles;
         if let EngineProcessor::CGO(cpu) = &mut self.processor {
             cpu.set_external_signal_delays(pause_cycles, resume_cycles);
+        }
+    }
+
+    pub(crate) fn clock_cycle(&self) -> u64 {
+        self.clock_cycle
+    }
+
+    pub(crate) fn harness_read_FGO_vector(&self, addr: u32) -> Option<[i16; 8]> {
+        match &self.processor {
+            EngineProcessor::FGO(pe) => pe.harness_read_vector(addr),
+            EngineProcessor::CGO(_) => None,
         }
     }
 
@@ -409,7 +451,7 @@ impl Engine {
             EngineProcessor::FGO(pe) => pe.allow_next(),
             EngineProcessor::CGO(_) => unreachable!(),
         }
-        self.fgo_request_state = FgoRequestState::PimInFlight;
+        self.fgo_request_state = FGO_RequestState::PimInFlight;
     }
 
     fn fgo_pim_finished(&mut self) -> bool {
@@ -459,7 +501,7 @@ impl Engine {
             .pop_front()
             .expect("host request must exist before FGO host issue");
         self.dram_port.submit(req);
-        self.fgo_request_state = FgoRequestState::HostInFlight;
+        self.fgo_request_state = FGO_RequestState::HostInFlight;
     }
 
     /*
@@ -473,27 +515,27 @@ impl Engine {
                 self.switch(EngineMode::switch_delay);
             }
             EngineMode::PIM => {
-                if matches!(self.fgo_request_state, FgoRequestState::PimInFlight)
+                if matches!(self.fgo_request_state, FGO_RequestState::PimInFlight)
                     && self.fgo_pim_finished()
                 {
-                    self.fgo_request_state = FgoRequestState::Idle;
+                    self.fgo_request_state = FGO_RequestState::Idle;
                     self.fgo_next_service = EngineMode::HOST;
                 }
 
-                if matches!(self.fgo_request_state, FgoRequestState::Idle) {
+                if matches!(self.fgo_request_state, FGO_RequestState::Idle) {
                     self.fgo_select_in_pim_mode();
                 }
             }
             EngineMode::HOST => {
-                if matches!(self.fgo_request_state, FgoRequestState::HostInFlight)
+                if matches!(self.fgo_request_state, FGO_RequestState::HostInFlight)
                     && self.dram_port.req_drained_for_mode(portal_mode::HOST)
                     && self.dsim3.is_drained()
                 {
-                    self.fgo_request_state = FgoRequestState::Idle;
+                    self.fgo_request_state = FGO_RequestState::Idle;
                     self.fgo_next_service = EngineMode::PIM;
                 }
 
-                if matches!(self.fgo_request_state, FgoRequestState::Idle) {
+                if matches!(self.fgo_request_state, FGO_RequestState::Idle) {
                     self.fgo_select_in_host_mode();
                 }
             }
@@ -507,6 +549,30 @@ impl Engine {
         self.host_pool.push_back(req);
     }
 
+    pub(crate) fn mirror_host_write(&mut self, global_addr: u64, payload: &cacheline_payload) {
+        if !self.init_mirroring_enabled {
+            return;
+        }
+
+        if matches!(&self.processor, EngineProcessor::CGO(cpu) if cpu.is_started()) {
+            return;
+        }
+
+        let local_addr = self.dsim3.global_addr_to_local_components(global_addr);
+        let first_entry = local_addr
+            .bank_local_addr
+            .checked_mul(PIM_ENTRIES_PER_CACHELINE)
+            .and_then(|addr| u32::try_from(addr).ok())
+            .expect("bank-local address exceeds PIM flat-memory address space");
+
+        match &mut self.processor {
+            EngineProcessor::CGO(cpu) => {
+                cpu.get_fmem().mirror_host_write(first_entry, payload);
+            }
+            EngineProcessor::FGO(pe) => pe.mirror_host_write(first_entry, payload),
+        }
+    }
+
     pub fn enqueue_host_pim_request(&mut self, req: dram_req, cmd: pim_cmd) {
         if req.is_pim() {
             panic!("host PIM request must be a host request in the PIM command page");
@@ -518,14 +584,16 @@ impl Engine {
         }
 
         match (&mut self.processor, cmd) {
-            (EngineProcessor::FGO(pe), pim_cmd::Fgo(instruction)) => {
+            (EngineProcessor::FGO(pe), pim_cmd::FGO(instruction)) => {
+                self.init_mirroring_enabled = false;
                 pe.push_host_req(req, instruction)
             }
-            (EngineProcessor::CGO(_), pim_cmd::CgoStart) => {
-                self.cgo_cmd_queue.push_back((CgoCmd::Start, req));
+            (EngineProcessor::CGO(_), pim_cmd::CGO_Start) => {
+                self.init_mirroring_enabled = false;
+                self.cgo_cmd_queue.push_back((CGO_Cmd::Start, req));
             }
-            (EngineProcessor::CGO(_), pim_cmd::CgoQuery) => {
-                self.cgo_cmd_queue.push_back((CgoCmd::Query, req));
+            (EngineProcessor::CGO(_), pim_cmd::CGO_Query) => {
+                self.cgo_cmd_queue.push_back((CGO_Cmd::Query, req));
             }
             _ => unreachable!("PIM command compatibility was checked before enqueue"),
         }
@@ -548,10 +616,10 @@ impl Engine {
 
         matches!(
             (&self.processor, cmd),
-            (EngineProcessor::FGO(_), pim_cmd::Fgo(_))
+            (EngineProcessor::FGO(_), pim_cmd::FGO(_))
                 | (
                     EngineProcessor::CGO(_),
-                    pim_cmd::CgoStart | pim_cmd::CgoQuery
+                    pim_cmd::CGO_Start | pim_cmd::CGO_Query
                 )
         )
     }
@@ -577,10 +645,10 @@ impl Engine {
             };
 
             match cmd {
-                CgoCmd::Start => {
+                CGO_Cmd::Start => {
                     cpu.start();
                 }
-                CgoCmd::Query => {
+                CGO_Cmd::Query => {
                     req.set_payload_word0(cpu.is_finished() as u64);
                 }
             }
@@ -595,10 +663,7 @@ impl Engine {
                 break;
             };
 
-            let is_write = !req.is_read();
-            let addr = req.get_addr();
-
-            if self.dsim3.WillAcceptTransaction(addr, is_write) {
+            if self.dsim3.WillAcceptTransactionReq(&req) {
                 req.set_id(self.dsim3.get_req_id());
                 req.set_issue_time(self.clock_cycle);
                 self.dsim3.AddTransactionReq(req);
@@ -632,10 +697,6 @@ impl Engine {
         self.host_complete_queue.pop_front()
     }
 
-    pub fn host_has_complete(&self) -> bool {
-        !self.host_complete_queue.is_empty()
-    }
-
     pub fn tick(&mut self) {
         match self.scheduling_mode {
             EngineSchedulingMode::Unconfigured => {
@@ -650,7 +711,7 @@ impl Engine {
             }
             EngineSchedulingMode::Host_FGO_share => {
                 if matches!(self.mode, EngineMode::PIM)
-                    && matches!(self.fgo_request_state, FgoRequestState::PimInFlight)
+                    && matches!(self.fgo_request_state, FGO_RequestState::PimInFlight)
                 {
                     match &mut self.processor {
                         EngineProcessor::FGO(pe) => pe.tick(),

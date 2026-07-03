@@ -4,7 +4,7 @@ use crate::cpu::pipeline::CPU;
 use crate::cpu::signal_scoreboard::{SigFSM, pipeline_action, signal_reason, signal_req};
 use std::collections::{HashMap, HashSet};
 
-use crate::memory::flat_memory::cpu_flat_mem;
+use crate::memory::flat_memory::{PIM_ENTRIES_PER_CACHELINE, cpu_flat_mem};
 use crate::memory::mem_portal::{dram_portal, dram_req};
 
 #[derive(Clone, Copy)]
@@ -89,7 +89,7 @@ impl CPU {
                             },
                             signal_req::new(
                                 signal_reason::MEM_block {
-                                    addr: paddr as u64,
+                                    addr: u64::from(paddr) / PIM_ENTRIES_PER_CACHELINE,
                                     is_read: true,
                                 },
                                 CPU_stages::MEM,
@@ -126,7 +126,7 @@ impl CPU {
                             },
                             signal_req::new(
                                 signal_reason::MEM_block {
-                                    addr: paddr as u64,
+                                    addr: u64::from(paddr) / PIM_ENTRIES_PER_CACHELINE,
                                     is_read: false,
                                 },
                                 CPU_stages::MEM,
@@ -167,7 +167,7 @@ impl CPU {
                             },
                             signal_req::new(
                                 signal_reason::MEM_block {
-                                    addr: paddr as u64,
+                                    addr: u64::from(paddr) / PIM_ENTRIES_PER_CACHELINE,
                                     is_read: true,
                                 },
                                 CPU_stages::MEM,
@@ -204,7 +204,7 @@ impl CPU {
                             },
                             signal_req::new(
                                 signal_reason::MEM_block {
-                                    addr: paddr as u64,
+                                    addr: u64::from(paddr) / PIM_ENTRIES_PER_CACHELINE,
                                     is_read: false,
                                 },
                                 CPU_stages::MEM,

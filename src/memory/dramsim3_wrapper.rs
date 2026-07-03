@@ -81,6 +81,29 @@ impl dramsim3_wrapper {
         dramsim3_ext::GlobalToLocalAddr(self.ms.pin_mut(), addr)
     }
 
+    pub fn exact_local_to_global_addr(
+        &mut self,
+        channel: u64,
+        rank: u64,
+        bank_group: u64,
+        bank: u64,
+        row: u64,
+        column: u64,
+    ) -> u64 {
+        let local_addr = local_addr_bulk {
+            channel,
+            rank,
+            bank_group,
+            bank,
+            row,
+            column,
+            global_addr: 0,
+            bank_local_addr: 0,
+        };
+
+        dramsim3_ext::ExactLocalToGlobalAddr(self.ms.pin_mut(), &local_addr)
+    }
+
     fn push_pending(queue_map: &mut HashMap<u64, VecDeque<dram_req>>, addr: u64, req: dram_req) {
         if req.get_id().is_none() {
             panic!("Cannot add this req: request id is missing");
@@ -149,6 +172,19 @@ impl dramsim3_wrapper {
     }
 
     pub fn get_burst_length(&mut self) -> i32 {
+        let local_addr = local_addr_bulk{
+            channel: 0,
+            rank: 0,
+            bank_group: 0,
+            bank: 3,
+            row: 0,
+            column: 0,
+            global_addr: 0,
+            bank_local_addr: 0,
+        };
+        let addr = dramsim3_ext::BankLocalToGlobalAddr(self.ms.pin_mut(), &local_addr);
+
+        println!("Translated address: 0x{:x}", addr);
         dramsim3_ext::GetBurstLength(self.ms.pin_mut())
     }
 
@@ -192,6 +228,11 @@ impl dramsim3_wrapper {
 
     pub fn WillAcceptTransaction(&mut self, addr: u64, is_write: bool) -> bool {
         dramsim3_ext::WillAcceptTransaction(self.ms.pin_mut(), addr, is_write)
+    }
+
+    pub fn WillAcceptTransactionReq(&mut self, req: &dram_req) -> bool {
+        let real_addr = self.request_addr_to_dram_addr(req.get_addr(), req.is_pim());
+        dramsim3_ext::WillAcceptTransaction(self.ms.pin_mut(), real_addr, !req.is_read())
     }
 
     pub fn AddTransactionReq(&mut self, req: dram_req) {

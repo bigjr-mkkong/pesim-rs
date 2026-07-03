@@ -22,8 +22,8 @@ impl Sim {
             }
             std::collections::hash_map::Entry::Vacant(ent) => {
                 let mut engine = match cfg {
-                    engine_cfg::CGO { .. } => Engine::new_cgo(),
-                    engine_cfg::FGO { .. } => Engine::new_fgo(),
+                    engine_cfg::CGO { ch, ra, bg, ba } => Engine::new_cgo_at(ch, ra, bg, ba),
+                    engine_cfg::FGO { ch, ra, bg, ba } => Engine::new_fgo_at(ch, ra, bg, ba),
                 };
                 engine
                     .set_scheduling_mode(scheduling_mode)
@@ -202,11 +202,18 @@ fn assert_completions_carry_issue_times(completions: &[(dram_req, u64)]) {
 }
 
 fn find_addr_for_new_cgo_cfg(sim: &mut Sim, used_cfgs: &[engine_cfg]) -> (u64, engine_cfg) {
-    for addr in (0..(1_u64 << 24)).step_by(64) {
-        let cfg = sim.cgo_engine_cfg_for_addr_for_test(addr);
+    for ch in 0..sim.dsim3.get_channels() {
+        for ra in 0..sim.dsim3.get_ranks() {
+            for bg in 0..sim.dsim3.get_bankgroups_per_rank() {
+                for ba in 0..sim.dsim3.get_banks_per_bg() {
+                    let addr = sim.dsim3.exact_local_to_global_addr(ch, ra, bg, ba, 0, 0);
+                    let cfg = sim.cgo_engine_cfg_for_addr_for_test(addr);
 
-        if !used_cfgs.contains(&cfg) {
-            return (addr, cfg);
+                    if !used_cfgs.contains(&cfg) {
+                        return (addr, cfg);
+                    }
+                }
+            }
         }
     }
 
@@ -214,35 +221,53 @@ fn find_addr_for_new_cgo_cfg(sim: &mut Sim, used_cfgs: &[engine_cfg]) -> (u64, e
 }
 
 fn find_addrs_outside_engine_area(sim: &mut Sim, count: usize) -> Vec<u64> {
-    let mut addrs = Vec::new();
-
-    for addr in (0..(1_u64 << 24)).step_by(64) {
-        if !sim.addr_maps_to_engine_for_test(addr) {
-            addrs.push(addr);
-
-            if addrs.len() == count {
-                return addrs;
-            }
-        }
-    }
-
-    panic!("could not find {count} addresses outside configured engine areas");
+    find_addrs_by_engine_mapping(sim, count, false)
 }
 
 fn find_addrs_inside_engine_area(sim: &mut Sim, count: usize) -> Vec<u64> {
+    find_addrs_by_engine_mapping(sim, count, true)
+}
+
+fn find_addrs_by_engine_mapping(
+    sim: &mut Sim,
+    count: usize,
+    should_map_to_engine: bool,
+) -> Vec<u64> {
     let mut addrs = Vec::new();
 
-    for addr in (0..(1_u64 << 24)).step_by(64) {
-        if sim.addr_maps_to_engine_for_test(addr) {
-            addrs.push(addr);
-
-            if addrs.len() == count {
-                return addrs;
+    for bank_local_addr in 0..count.max(1) as u64 {
+        for ch in 0..sim.dsim3.get_channels() {
+            for ra in 0..sim.dsim3.get_ranks() {
+                for bg in 0..sim.dsim3.get_bankgroups_per_rank() {
+                    for ba in 0..sim.dsim3.get_banks_per_bg() {
+                        let addr = sim.dsim3.exact_local_to_global_addr(
+                            ch,
+                            ra,
+                            bg,
+                            ba,
+                            0,
+                            bank_local_addr,
+                        );
+                        if sim.addr_maps_to_engine_for_test(addr) == should_map_to_engine {
+                            addrs.push(addr);
+                            if addrs.len() == count {
+                                return addrs;
+                            }
+                        }
+                    }
+                }
             }
         }
     }
 
-    panic!("could not find {count} addresses inside configured engine areas");
+    panic!(
+        "could not find {count} addresses that {} configured engine areas",
+        if should_map_to_engine {
+            "map to"
+        } else {
+            "remain outside"
+        }
+    );
 }
 
 fn assert_completed_requests_match(completions: &[(dram_req, u64)], expected: &[(u64, bool)]) {
@@ -574,7 +599,37 @@ fn sim_routes_encoded_request_to_pe_and_returns_dram_req_completion() {
 }
 
 #[test]
-fn sim_broadcasts_encoded_request_to_all_fgo_engines() {
+fn sim_mirrors_host_cacheline_into_FGO_flat_memory_before_first_command() {
+    let mut sim = Sim::new();
+    sim.set_mode_for_test(SimMode::Pim);
+    let cfg = engine_cfg::FGO {
+        ch: 0,
+        ra: 0,
+        bg: 0,
+        ba: 0,
+    };
+    sim.add_engine_with_scheduling_for_test(cfg, EngineSchedulingMode::Host_FGO_share);
+
+    let mut host_payload = [0; 8];
+    host_payload[0] = u64::from_le_bytes([11, 0, 12, 0, 13, 0, 14, 0]);
+    host_payload[1] = u64::from_le_bytes([15, 0, 16, 0, 17, 0, 18, 0]);
+    assert!(sim.canAccept(0, true));
+    sim.enqueue_with_data(0, host_payload, 64, true);
+
+    let (cmd_addr, cmd_payload) = encode_fgo_cmd(pe_inst::LD128 { vRD: 1, addr: 0 });
+    assert!(sim.canAccept(cmd_addr, true));
+    sim.enqueue_with_data(cmd_addr, cmd_payload, 8, true);
+
+    let completions = drain_until_completions(&mut sim, 2);
+    assert_completed_requests_match(&completions, &[(0, true), (cmd_addr, true)]);
+    assert_eq!(
+        sim.engine_mut_for_test(cfg).get_pe().get_Arf().read_vRF(1),
+        [11, 12, 13, 14, 15, 16, 17, 18]
+    );
+}
+
+#[test]
+fn sim_broadcasts_encoded_request_and_returns_one_host_completion() {
     let mut sim = Sim::new();
     sim.set_mode_for_test(SimMode::Pim);
     let first_cfg = engine_cfg::FGO {
@@ -614,9 +669,8 @@ fn sim_broadcasts_encoded_request_to_all_fgo_engines() {
     assert!(sim.canAccept(addr, true));
     sim.enqueue_with_data(addr, payload, 8, true);
 
-    let completions = drain_until_completions(&mut sim, 2);
-    assert_eq!(completions.len(), 2);
-    assert!(completions.iter().all(|(req, _)| req.get_addr() == addr));
+    let completions = drain_until_completions(&mut sim, 1);
+    assert_eq!(completions[0].0.get_addr(), addr);
     assert_eq!(
         sim.engine_mut_for_test(first_cfg)
             .get_pe()
@@ -659,7 +713,7 @@ fn sim_broadcasts_cgo_commands_only_to_cgo_engines() {
     sim.add_engine_with_scheduling_for_test(second_cgo, EngineSchedulingMode::CGO_only);
     sim.add_engine_with_scheduling_for_test(fgo_cfg, EngineSchedulingMode::Host_FGO_share);
 
-    let (start_addr, start_payload) = encode_pim_cmd(pim_cmd::CgoStart);
+    let (start_addr, start_payload) = encode_pim_cmd(pim_cmd::CGO_Start);
     assert!(sim.canAccept(start_addr, true));
     assert!(sim.canAccept(start_addr, false));
     sim.enqueue_with_data(start_addr, start_payload, 8, true);
@@ -669,16 +723,13 @@ fn sim_broadcasts_cgo_commands_only_to_cgo_engines() {
     while sim.hasComplete() {
         completions.push(sim.getComplete().unwrap());
     }
-    assert_eq!(completions.len(), 2);
-    assert!(
-        completions
-            .iter()
-            .all(|req| req.get_addr() == start_addr && !req.is_read())
-    );
+    assert_eq!(completions.len(), 1);
+    assert_eq!(completions[0].get_addr(), start_addr);
+    assert!(!completions[0].is_read());
     assert!(sim.engine_mut_for_test(first_cgo).get_cpu().is_started());
     assert!(sim.engine_mut_for_test(second_cgo).get_cpu().is_started());
 
-    let (query_addr, query_payload) = encode_pim_cmd(pim_cmd::CgoQuery);
+    let (query_addr, query_payload) = encode_pim_cmd(pim_cmd::CGO_Query);
     assert!(sim.canAccept(query_addr, false));
     assert!(sim.canAccept(query_addr, true));
     sim.enqueue_with_data(query_addr, query_payload, 8, false);
@@ -688,23 +739,17 @@ fn sim_broadcasts_cgo_commands_only_to_cgo_engines() {
     while sim.hasComplete() {
         completions.push(sim.getComplete().unwrap());
     }
-    assert_eq!(completions.len(), 2);
-    assert!(
-        completions
-            .iter()
-            .all(|req| req.get_addr() == query_addr && req.is_read() && req.get_payload()[0] == 0)
-    );
+    assert_eq!(completions.len(), 1);
+    assert_eq!(completions[0].get_addr(), query_addr);
+    assert!(completions[0].is_read());
+    assert_eq!(completions[0].get_payload()[0], 0);
 }
 
 #[test]
 fn sim_handles_cgo_alloc_as_next_cycle_control_completion() {
     let mut sim = Sim::new();
     sim.set_mode_for_test(SimMode::Pim);
-    let max_ch = sim.dsim3.get_channels();
-    let max_ra = sim.dsim3.get_ranks();
-    let max_bg = sim.dsim3.get_bankgroups_per_rank();
-    let max_ba = sim.dsim3.get_banks_per_bg();
-    let expected_engines = (max_ch * max_ra * max_bg * max_ba) as usize;
+    let expected_engines = 2;
     let (addr, payload) = encode_pim_cmd(pim_cmd::Ctrl_CGO_Alloc { asid: 0x111 });
 
     assert!(sim.canAccept(addr, true));
@@ -720,29 +765,25 @@ fn sim_handles_cgo_alloc_as_next_cycle_control_completion() {
     assert_eq!(completed.get_payload()[0], expected_engines as u64);
     assert!(!completed.is_read());
     assert_eq!(sim.engines.len(), expected_engines);
-
-    for ch in 0..max_ch {
-        for ra in 0..max_ra {
-            for bg in 0..max_bg {
-                for ba in 0..max_ba {
-                    assert!(
-                        sim.engines
-                            .contains_key(&engine_cfg::CGO { ch, ra, bg, ba })
-                    );
-                }
-            }
-        }
-    }
+    assert!(sim.engines.contains_key(&engine_cfg::CGO {
+        ch: 0,
+        ra: 0,
+        bg: 0,
+        ba: 1,
+    }));
+    assert!(sim.engines.contains_key(&engine_cfg::CGO {
+        ch: 0,
+        ra: 0,
+        bg: 0,
+        ba: 2,
+    }));
 }
 
 #[test]
 fn sim_completes_bad_alloc_direction_without_allocating() {
     let mut sim = Sim::new();
     sim.set_mode_for_test(SimMode::Pim);
-    let expected_engines = (sim.dsim3.get_channels()
-        * sim.dsim3.get_ranks()
-        * sim.dsim3.get_bankgroups_per_rank()
-        * sim.dsim3.get_banks_per_bg()) as usize;
+    let expected_engines = 2;
     let (bad_addr, bad_payload) = encode_pim_cmd(pim_cmd::Ctrl_CGO_Alloc { asid: 0x111 });
 
     assert!(sim.canAccept(bad_addr, false));
@@ -791,11 +832,7 @@ fn sim_cgo_alloc_scheduling_mode_is_configurable_to_cgo_modes_only() {
 fn sim_alloc_winner_takes_all_and_second_asid_gets_empty_allocation() {
     let mut sim = Sim::new();
     sim.set_mode_for_test(SimMode::Pim);
-    let max_ch = sim.dsim3.get_channels();
-    let max_ra = sim.dsim3.get_ranks();
-    let max_bg = sim.dsim3.get_bankgroups_per_rank();
-    let max_ba = sim.dsim3.get_banks_per_bg();
-    let expected_engines = (max_ch * max_ra * max_bg * max_ba) as usize;
+    let expected_engines = 2;
 
     let (first_addr, first_payload) = encode_pim_cmd(pim_cmd::Ctrl_FGO_Alloc { asid: 0x111 });
     sim.enqueue_with_data(first_addr, first_payload, 8, true);
@@ -814,19 +851,94 @@ fn sim_alloc_winner_takes_all_and_second_asid_gets_empty_allocation() {
         .expect("second allocation should still complete on the next tick");
     assert_eq!(second.get_payload()[0], 0);
     assert_eq!(sim.engines.len(), expected_engines);
+    assert!(sim.engines.contains_key(&engine_cfg::FGO {
+        ch: 0,
+        ra: 0,
+        bg: 0,
+        ba: 1,
+    }));
+    assert!(sim.engines.contains_key(&engine_cfg::FGO {
+        ch: 0,
+        ra: 0,
+        bg: 0,
+        ba: 2,
+    }));
+}
 
-    for ch in 0..max_ch {
-        for ra in 0..max_ra {
-            for bg in 0..max_bg {
-                for ba in 0..max_ba {
-                    assert!(
-                        sim.engines
-                            .contains_key(&engine_cfg::FGO { ch, ra, bg, ba })
-                    );
-                }
-            }
+#[test]
+fn sim_FGO_alloc_then_NOP_returns_exactly_one_completion() {
+    let mut sim = Sim::new();
+    sim.set_mode_for_test(SimMode::Pim);
+
+    let (alloc_addr, alloc_payload) = encode_pim_cmd(pim_cmd::Ctrl_FGO_Alloc { asid: 114514 });
+    sim.enqueue_with_data(alloc_addr, alloc_payload, 8, true);
+    sim.tick();
+    let allocation = sim
+        .getComplete()
+        .expect("FGO allocation should complete on the next tick");
+    assert_eq!(allocation.get_payload()[0], 2);
+    assert!(!sim.hasComplete());
+
+    let (nop_addr, nop_payload) = encode_fgo_cmd(pe_inst::NOP);
+    sim.enqueue_with_data(nop_addr, nop_payload, 8, true);
+    let completions = drain_until_completions(&mut sim, 1);
+    assert_eq!(completions[0].0.get_addr(), nop_addr);
+    assert!(!completions[0].0.is_read());
+
+    for _ in 0..32 {
+        sim.tick();
+    }
+    assert!(
+        !sim.hasComplete(),
+        "one broadcast FGO NOP must not produce a second host completion"
+    );
+}
+
+#[test]
+fn sim_keeps_engine_completions_out_of_dsim3_completion_queue() {
+    let mut sim = Sim::new();
+    sim.set_mode_for_test(SimMode::Pim);
+    let cfg = engine_cfg::FGO {
+        ch: 0,
+        ra: 0,
+        bg: 0,
+        ba: 0,
+    };
+    sim.add_engine_with_scheduling_for_test(cfg, EngineSchedulingMode::Host_FGO_share);
+
+    let (nop_addr, nop_payload) = encode_fgo_cmd(pe_inst::NOP);
+    sim.enqueue_with_data(nop_addr, nop_payload, 8, true);
+    for _ in 0..MAX_DRAIN_TICKS {
+        sim.tick();
+        if !sim.engine_comp_queue.is_empty() {
+            break;
         }
     }
+
+    assert_eq!(sim.engine_comp_queue.len(), 1);
+    assert!(sim.dsim3_comp_queue.is_empty());
+    assert!(sim.pending_pim_cmds.is_empty());
+    sim.getComplete()
+        .expect("FGO completion should be available from the engine queue");
+
+    let mapped_addr = 0;
+    assert!(sim.addr_maps_to_engine_for_test(mapped_addr));
+    sim.enqueue_with_data(mapped_addr, [0; 8], 64, true);
+    for _ in 0..MAX_DRAIN_TICKS {
+        sim.tick();
+        if !sim.engine_comp_queue.is_empty() {
+            break;
+        }
+    }
+
+    assert_eq!(sim.engine_comp_queue.len(), 1);
+    assert!(sim.dsim3_comp_queue.is_empty());
+    assert_eq!(
+        sim.getComplete()
+            .expect("mapped host completion should come from the engine queue")
+            .get_addr(),
+        mapped_addr
+    );
 }
 
 #[test]

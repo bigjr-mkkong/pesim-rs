@@ -9,7 +9,7 @@ use crate::PE::ISSUE::ISSUE_EX_RF;
 use crate::PE::pe_top::PE;
 use crate::PE::types::{ALUop, MEMop, PE_stages, WBop, arch_action};
 use crate::cpu::signal_scoreboard::{pipeline_action, signal_reason};
-use crate::memory::flat_memory::pe_flat_mem;
+use crate::memory::flat_memory::{PIM_ENTRIES_PER_CACHELINE, pe_flat_mem};
 use crate::memory::mem_portal::{dram_portal, dram_req};
 use std::collections::HashMap;
 
@@ -88,7 +88,7 @@ impl PE {
             MEMop::ReadV { addr } => {
                 ex_wb_next.v_result = fmem.mem_read_v(addr);
                 sig_reason = signal_reason::MEM_block {
-                    addr: addr as u64,
+                    addr: u64::from(addr) / PIM_ENTRIES_PER_CACHELINE,
                     is_read: true,
                 };
             }
@@ -99,14 +99,14 @@ impl PE {
                     content: data,
                 });
                 sig_reason = signal_reason::MEM_block {
-                    addr: addr as u64,
+                    addr: u64::from(addr) / PIM_ENTRIES_PER_CACHELINE,
                     is_read: false,
                 };
             }
             MEMop::ReadS { addr } => {
                 ex_wb_next.s_result = fmem.mem_read_s(addr);
                 sig_reason = signal_reason::MEM_block {
-                    addr: addr as u64,
+                    addr: u64::from(addr) / PIM_ENTRIES_PER_CACHELINE,
                     is_read: true,
                 };
             }
@@ -117,7 +117,7 @@ impl PE {
                     content: data,
                 });
                 sig_reason = signal_reason::MEM_block {
-                    addr: addr as u64,
+                    addr: u64::from(addr) / PIM_ENTRIES_PER_CACHELINE,
                     is_read: false,
                 };
             }

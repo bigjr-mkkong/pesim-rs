@@ -9,12 +9,14 @@ use sim_engine::request_router::MEM_BEGIN;
 
 #[cfg(not(test))]
 pub const DSIM3_CFG_PATH: &str = "/gem5/ext/pesim/pesim-rs/cfg/DDR4_8Gb_x4_2400_pim.ini";
+
 #[cfg(test)]
 pub const DSIM3_CFG_PATH: &str =
     "/home/michael/Projects/pimtlb/gem5/ext/pesim/pesim-rs/cfg/DDR4_8Gb_x4_2400_pim.ini";
 
 #[cfg(not(test))]
 pub const DSIM3_OUT_DIR: &str = "/gem5/ext/pesim/pesim-rs/output";
+
 #[cfg(test)]
 pub const DSIM3_OUT_DIR: &str = "/home/michael/Projects/pimtlb/gem5/ext/pesim/pesim-rs/output";
 
@@ -41,7 +43,7 @@ fn dsim3_paths() -> (PathBuf, PathBuf) {
 mod PE;
 mod cpu;
 mod errors;
-mod memory;
+pub mod memory;
 mod sim_engine;
 
 /*
@@ -238,6 +240,18 @@ pub extern "C" fn pesim_enqueue_with_data(
             is_write,
         );
         body.enqueued += 1;
+
+        /*
+         * For endieness testing
+         */
+        if is_write && payload.payload_sz_bytes == 64{
+            for (idx, i) in payload.dword_payload.iter().enumerate() {
+                let lo32: u32 = *i as u32;
+                let hi32: u32 = (*i>>32) as u32;
+                println!("lo32 for dword {} is: {:x}", idx, lo32);
+                println!("hi for dword {} is: {:x}", idx, hi32);
+            }
+        }
         true
     })
 }

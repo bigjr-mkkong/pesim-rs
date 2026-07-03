@@ -47,6 +47,7 @@ use crate::memory::mem_portal::{cacheline_payload, dram_req};
 use crate::sim_engine::engine::{Engine, EngineRequest, EngineSchedulingMode};
 use crate::sim_engine::engine_alloc::engine_alloc;
 use crate::sim_engine::request_router::{decode_pim_cmd, pim_cmd};
+use crate::sim_engine::timing_harness::timing_harness;
 use std::collections::HashMap;
 
 const PIM_CMD_PAYLOAD_SIZE_BYTES: u32 = std::mem::size_of::<u64>() as u32;
@@ -66,8 +67,11 @@ pub struct Sim {
     engines: HashMap<engine_cfg, Engine>,
     dsim3: dramsim3_wrapper,
     dsim3_comp_queue: Vec<dram_req>,
+    engine_comp_queue: Vec<dram_req>,
     immediate_complete_next: Vec<dram_req>,
     immediate_complete_ready: Vec<dram_req>,
+    pending_pim_cmds: HashMap<u64, (dram_req, usize)>,
+    harness: timing_harness,
     sim_mode: SimMode,
     allocator: engine_alloc,
     //Preset of Engine scheduling mode for allocated CGO engine
@@ -79,19 +83,17 @@ impl Sim {
         let (cfg_path, out_dir) = dsim3_paths();
         let mut dsim3_inst = dramsim3_wrapper::new(cfg_path, out_dir, 0, 0, 0, 0);
         dsim3_inst.SetPimMode(false); //Set dsim3 as non-pim as it handle normal traces
-        let allocator = engine_alloc::new(
-            dsim3_inst.get_channels(),
-            dsim3_inst.get_ranks(),
-            dsim3_inst.get_bankgroups_per_rank(),
-            dsim3_inst.get_banks_per_bg(),
-        );
+        let allocator = engine_alloc::new(0..1, 0..1, 0..1, 1..3);
 
         Self {
             engines: HashMap::new(),
             dsim3: dsim3_inst,
             dsim3_comp_queue: Vec::new(),
+            engine_comp_queue: Vec::new(),
             immediate_complete_next: Vec::new(),
             immediate_complete_ready: Vec::new(),
+            pending_pim_cmds: HashMap::new(),
+            harness: timing_harness::new(),
             sim_mode: SimMode::Pim,
             allocator,
             cgo_alloc_scheduling_mode: EngineSchedulingMode::Host_CGO_share,
@@ -105,8 +107,8 @@ impl Sim {
             }
             std::collections::hash_map::Entry::Vacant(ent) => {
                 let engine = match cfg {
-                    engine_cfg::CGO { .. } => Engine::new_cgo(),
-                    engine_cfg::FGO { .. } => Engine::new_fgo(),
+                    engine_cfg::CGO { ch, ra, bg, ba } => Engine::new_cgo_at(ch, ra, bg, ba),
+                    engine_cfg::FGO { ch, ra, bg, ba } => Engine::new_fgo_at(ch, ra, bg, ba),
                 };
                 ent.insert(engine);
             }
@@ -258,7 +260,7 @@ impl Sim {
             }
             Ok(Some(cmd)) => self.enqueue_pim_cmd(req, cmd),
             Ok(None) => {
-                self.enqueue_regular_memory(req);
+                self.enqueue_regular_memory(req, payload_sz_bytes);
             }
             Err(err) => {
                 eprintln!("warning: ignoring invalid PIM command at {addr:#x}: {err}");
@@ -289,6 +291,7 @@ impl Sim {
             }
         }
 
+        //This payload set the number of allocated engine, so it's fine
         req.set_payload_word0(allocated_count as u64);
         self.enqueue_next_cycle_completion(req);
     }
@@ -302,24 +305,102 @@ impl Sim {
             decoded_cmd: Ok(Some(cmd)),
         };
 
-        let mut pushed = false;
-        for engine in self.engines.values_mut() {
+        let mut target_count = 0;
+        let req_id = req
+            .get_id()
+            .expect("PIM command must have an id before fan-out");
+        for (cfg, engine) in self.engines.iter_mut() {
             if engine.can_accept_pim_cmd(cmd, request.is_write) {
                 if !engine.canAccept(request) {
                     panic!("PIM command target engine cannot accept the request");
                 }
                 engine.enqueue_host_pim_request(req.clone(), cmd);
-                pushed = true;
+                if let pim_cmd::FGO(instruction) = cmd {
+                    self.harness
+                        .log_FGO_receive(*cfg, engine.clock_cycle(), req_id, instruction);
+                }
+                target_count += 1;
             }
         }
 
-        if !pushed {
+        if target_count == 0 {
             eprintln!("warning: PIM command has no initialized compatible engine");
             self.immediate_complete_next.push(req);
+            return;
+        }
+
+        if matches!(cmd, pim_cmd::CGO_Query) {
+            req.set_payload_word0(1);
+        }
+        assert!(
+            self.pending_pim_cmds
+                .insert(req_id, (req, target_count))
+                .is_none(),
+            "duplicate pending PIM command request id"
+        );
+    }
+
+    fn collect_engine_completion(&mut self) {
+        for (cfg, engine) in self.engines.iter_mut() {
+            while let Some(req) = engine.get_host_complete() {
+                let cmd = match decode_pim_cmd(req.get_addr(), req.get_payload()) {
+                    Ok(Some(cmd @ (pim_cmd::FGO(_) | pim_cmd::CGO_Start | pim_cmd::CGO_Query))) => {
+                        Some(cmd)
+                    }
+                    _ => None,
+                };
+
+                let Some(cmd) = cmd else {
+                    self.engine_comp_queue.push(req);
+                    continue;
+                };
+
+                let req_id = req
+                    .get_id()
+                    .expect("PIM command completion must carry a request id");
+                if let pim_cmd::FGO(instruction) = cmd {
+                    let cycle = engine.clock_cycle();
+                    if let crate::PE::types::inst::ST128 { addr, .. } = instruction {
+                        self.harness.log_FGO_result(
+                            *cfg,
+                            cycle,
+                            req_id,
+                            addr,
+                            engine.harness_read_FGO_vector(addr),
+                        );
+                    }
+                    self.harness
+                        .log_FGO_retire(*cfg, cycle, req_id, instruction);
+                }
+                let is_drained = {
+                    let (pending_req, remaining) = self
+                        .pending_pim_cmds
+                        .get_mut(&req_id)
+                        .expect("PIM command completion must have a pending request");
+                    assert!(*remaining > 0, "PIM command completed too many times");
+
+                    if matches!(cmd, pim_cmd::CGO_Query) {
+                        let all_finished =
+                            pending_req.get_payload()[0] != 0 && req.get_payload()[0] != 0;
+                        pending_req.set_payload_word0(all_finished as u64);
+                    }
+
+                    *remaining -= 1;
+                    *remaining == 0
+                };
+
+                if is_drained {
+                    let (completed_req, _) = self
+                        .pending_pim_cmds
+                        .remove(&req_id)
+                        .expect("drained PIM command must still be pending");
+                    self.engine_comp_queue.push(completed_req);
+                }
+            }
         }
     }
 
-    fn enqueue_regular_memory(&mut self, mut req: dram_req) {
+    fn enqueue_regular_memory(&mut self, mut req: dram_req, payload_sz_bytes: u32) {
         if let SimMode::Pim = self.sim_mode {
             if let Some(cfg) = self.get_engine_cfg(req.get_addr()) {
                 let engine = self
@@ -330,6 +411,11 @@ impl Sim {
                     eprintln!("warning: ignoring host memory request to a PIM-only engine");
                     self.enqueue_next_cycle_completion(req);
                     return;
+                }
+                if !req.is_read()
+                    && payload_sz_bytes as usize == std::mem::size_of::<cacheline_payload>()
+                {
+                    engine.mirror_host_write(req.get_addr(), req.get_payload());
                 }
                 engine.enqueue_host_mem_request(req.clone());
             }
@@ -357,8 +443,7 @@ impl Sim {
             return !self.dsim3_comp_queue.is_empty();
         }
 
-        !self.dsim3_comp_queue.is_empty()
-            || self.engines.values().any(|eng| eng.host_has_complete())
+        !self.dsim3_comp_queue.is_empty() || !self.engine_comp_queue.is_empty()
     }
 
     pub fn getComplete(&mut self) -> Option<dram_req> {
@@ -370,12 +455,8 @@ impl Sim {
             return Some(req);
         }
 
-        if let SimMode::Pim = self.sim_mode {
-            for engine in self.engines.values_mut() {
-                if let Some(req) = engine.get_host_complete() {
-                    return Some(req);
-                }
-            }
+        if let Some(req) = self.engine_comp_queue.pop() {
+            return Some(req);
         }
 
         None
@@ -396,6 +477,7 @@ impl Sim {
                 scope.spawn(move || engine.tick());
             }
         });
+        self.collect_engine_completion();
 
         // In PESIM mode, mapped host completions come from engines. Keep only
         // regular DRAM completions from mono_dsim3.

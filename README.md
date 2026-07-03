@@ -25,6 +25,6 @@ To see test result
 
 
 ## Next step:
-1. Integration test with gem5
-2. Figure out actual memory mapping
-3. Test with simple payload
+1. Implement CGO start procedure simulation
+2. End to end testing
+

@@ -244,7 +244,7 @@ fn fgo_decodes_pe_request_and_returns_original_dram_req() {
     });
     engine.enqueue_host_pim_request(
         dram_req::new_with_payload(addr, payload, false, false),
-        pim_cmd::Fgo(pe_inst::ADD128 {
+        pim_cmd::FGO(pe_inst::ADD128 {
             vRD: 3,
             vRS0: 1,
             vRS1: 2,
@@ -273,7 +273,7 @@ fn encoded_nop_is_a_valid_pe_request() {
     let (addr, payload) = encode_fgo_cmd(pe_inst::NOP);
     engine.enqueue_host_pim_request(
         dram_req::new_with_payload(addr, payload, false, false),
-        pim_cmd::Fgo(pe_inst::NOP),
+        pim_cmd::FGO(pe_inst::NOP),
     );
 
     for _ in 0..16 {
@@ -297,8 +297,8 @@ fn cgo_rejects_encoded_pe_request() {
 #[test]
 fn fgo_rejects_cgo_commands_and_cgo_query_is_read_only() {
     let mut fgo = Engine::new_fgo();
-    let (query_addr, _) = encode_pim_cmd(pim_cmd::CgoQuery);
-    let (start_addr, _) = encode_pim_cmd(pim_cmd::CgoStart);
+    let (query_addr, _) = encode_pim_cmd(pim_cmd::CGO_Query);
+    let (start_addr, _) = encode_pim_cmd(pim_cmd::CGO_Start);
     assert!(!fgo.canAccept(engine_request(query_addr, false)));
     assert!(!fgo.canAccept(engine_request(start_addr, true)));
 
@@ -315,7 +315,7 @@ fn engine_admission_uses_the_supplied_decode_result() {
     let request = EngineRequest {
         addr: 0x40,
         is_write: false,
-        decoded_cmd: Ok(Some(pim_cmd::CgoQuery)),
+        decoded_cmd: Ok(Some(pim_cmd::CGO_Query)),
     };
 
     assert!(engine.canAccept(request));
@@ -343,10 +343,10 @@ fn cgo_start_gates_cpu_execution_and_query_reports_finished() {
     }
     assert_eq!(engine.get_cpu().get_RF().read_vregs(3), [0; 4]);
 
-    let (query_addr, query_payload) = encode_pim_cmd(pim_cmd::CgoQuery);
+    let (query_addr, query_payload) = encode_pim_cmd(pim_cmd::CGO_Query);
     engine.enqueue_host_pim_request(
         dram_req::new_with_payload(query_addr, query_payload, true, false),
-        pim_cmd::CgoQuery,
+        pim_cmd::CGO_Query,
     );
     engine.tick();
     let before = engine
@@ -354,10 +354,10 @@ fn cgo_start_gates_cpu_execution_and_query_reports_finished() {
         .expect("CGO query should complete on the next tick");
     assert_eq!(before.get_payload()[0], 0);
 
-    let (start_addr, start_payload) = encode_pim_cmd(pim_cmd::CgoStart);
+    let (start_addr, start_payload) = encode_pim_cmd(pim_cmd::CGO_Start);
     engine.enqueue_host_pim_request(
         dram_req::new_with_payload(start_addr, start_payload, false, false),
-        pim_cmd::CgoStart,
+        pim_cmd::CGO_Start,
     );
     engine.tick();
     assert_eq!(
@@ -379,11 +379,40 @@ fn cgo_start_gates_cpu_execution_and_query_reports_finished() {
 
     engine.enqueue_host_pim_request(
         dram_req::new_with_payload(query_addr, query_payload, true, false),
-        pim_cmd::CgoQuery,
+        pim_cmd::CGO_Query,
     );
     engine.tick();
     let after = engine
         .get_host_complete()
         .expect("CGO query should complete on the next tick");
     assert_eq!(after.get_payload()[0], 1);
+}
+
+#[test]
+fn first_FGO_command_closes_host_initialization_mirroring() {
+    let mut engine = Engine::new_fgo();
+    let mut initial_payload = [0; 8];
+    initial_payload[0] = u64::from_le_bytes([1, 0, 2, 0, 3, 0, 4, 0]);
+    initial_payload[1] = u64::from_le_bytes([5, 0, 6, 0, 7, 0, 8, 0]);
+    engine.mirror_host_write(64, &initial_payload);
+    assert_eq!(
+        engine.get_pe().get_fmem().mem_read_v(4),
+        Some([1, 2, 3, 4, 5, 6, 7, 8])
+    );
+
+    let (cmd_addr, cmd_payload) = encode_fgo_cmd(pe_inst::NOP);
+    engine.enqueue_host_pim_request(
+        dram_req::new_with_payload(cmd_addr, cmd_payload, false, false),
+        pim_cmd::FGO(pe_inst::NOP),
+    );
+
+    let mut later_payload = [0; 8];
+    later_payload[0] = u64::from_le_bytes([8, 0, 7, 0, 6, 0, 5, 0]);
+    later_payload[1] = u64::from_le_bytes([4, 0, 3, 0, 2, 0, 1, 0]);
+    engine.mirror_host_write(64, &later_payload);
+
+    assert_eq!(
+        engine.get_pe().get_fmem().mem_read_v(4),
+        Some([1, 2, 3, 4, 5, 6, 7, 8])
+    );
 }

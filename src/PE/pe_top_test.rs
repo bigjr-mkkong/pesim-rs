@@ -363,7 +363,7 @@ fn PE_stalled_ex_keeps_issue_latch_and_buffered_next_instruction() {
         assert!(!pe.has_finished());
     }
 
-    portal.complete(dram_req::new(0x300, true, true));
+    portal.complete(dram_req::new(0xc0, true, true));
 
     for _ in 0..128 {
         pe.tick();
@@ -387,4 +387,23 @@ fn PE_valid_nop_finishes_test() {
     pe.tick();
 
     assert!(pe.has_finished());
+}
+
+#[test]
+fn PE_memory_operand_uses_a_logical_16_byte_entry_address() {
+    let mut portal = dram_portal::new();
+    let mut pe = PE::new_with_dram_port(portal.clone());
+    seed_mem_s(&mut pe, 0x30, 1234);
+
+    pe.push_host_inst(inst::LD32 { sRD: 1, addr: 0x30 });
+    pe.allow_next();
+    pe.tick();
+    pe.tick();
+
+    let req = portal
+        .get_one_req()
+        .expect("FGO load should submit a DRAM request");
+    assert_eq!(req.get_addr(), 0x0c);
+    assert!(req.is_read());
+    assert!(req.is_pim());
 }

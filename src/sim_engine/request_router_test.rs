@@ -27,9 +27,9 @@ const OP_FGO_ALLOC: u64 = 13;
 
 pub(crate) fn encode_pim_cmd(command: pim_cmd) -> (u64, [u64; 8]) {
     match command {
-        pim_cmd::Fgo(instruction) => encode_fgo_cmd(instruction),
-        pim_cmd::CgoStart => encode_cgo_cmd(OP_CGO_START),
-        pim_cmd::CgoQuery => encode_cgo_cmd(OP_CGO_QUERY),
+        pim_cmd::FGO(instruction) => encode_fgo_cmd(instruction),
+        pim_cmd::CGO_Start => encode_cgo_cmd(OP_CGO_START),
+        pim_cmd::CGO_Query => encode_cgo_cmd(OP_CGO_QUERY),
         pim_cmd::Ctrl_CGO_Alloc { asid } => encode_alloc_cmd(OP_CGO_ALLOC, asid),
         pim_cmd::Ctrl_FGO_Alloc { asid } => encode_alloc_cmd(OP_FGO_ALLOC, asid),
     }
@@ -155,7 +155,7 @@ fn fixed_slots_round_trip_supported_instructions() {
 
     for instruction in cases {
         let (addr, payload) = encode_fgo_cmd(instruction);
-        let Some(pim_cmd::Fgo(decoded)) = decode_pim_cmd(addr, &payload).unwrap() else {
+        let Some(pim_cmd::FGO(decoded)) = decode_pim_cmd(addr, &payload).unwrap() else {
             panic!("FGO slot decoded as a non-FGO command");
         };
         assert_same_inst(decoded, instruction);
@@ -164,16 +164,16 @@ fn fixed_slots_round_trip_supported_instructions() {
 
 #[test]
 fn fixed_slots_decode_cgo_commands() {
-    let (start_addr, start_payload) = encode_pim_cmd(pim_cmd::CgoStart);
+    let (start_addr, start_payload) = encode_pim_cmd(pim_cmd::CGO_Start);
     assert!(matches!(
         decode_pim_cmd(start_addr, &start_payload),
-        Ok(Some(pim_cmd::CgoStart))
+        Ok(Some(pim_cmd::CGO_Start))
     ));
 
-    let (query_addr, query_payload) = encode_pim_cmd(pim_cmd::CgoQuery);
+    let (query_addr, query_payload) = encode_pim_cmd(pim_cmd::CGO_Query);
     assert!(matches!(
         decode_pim_cmd(query_addr, &query_payload),
-        Ok(Some(pim_cmd::CgoQuery))
+        Ok(Some(pim_cmd::CGO_Query))
     ));
 }
 

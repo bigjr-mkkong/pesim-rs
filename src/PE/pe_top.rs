@@ -10,8 +10,7 @@ use crate::PE::RF::arch_rf;
 use crate::PE::types::{PE_stages, arch_action, inst};
 use crate::cpu::signal_scoreboard::pipeline_action;
 use crate::memory::flat_memory::pe_flat_mem;
-use crate::memory::mem_portal::dram_portal;
-use crate::memory::mem_portal::dram_req;
+use crate::memory::mem_portal::{cacheline_payload, dram_portal, dram_req};
 use std::collections::{HashSet, VecDeque};
 
 pub struct PE {
@@ -79,6 +78,14 @@ impl PE {
         let finished = self.finished;
         self.finished = false;
         finished
+    }
+
+    pub(crate) fn mirror_host_write(&mut self, first_entry: u32, payload: &cacheline_payload) {
+        self.fmem.mirror_host_write(first_entry, payload);
+    }
+
+    pub(crate) fn harness_read_vector(&self, addr: u32) -> Option<[i16; 8]> {
+        self.fmem.mem_read_v(addr)
     }
 
     fn peek_fetch_inst(&self) -> Option<(inst, Option<dram_req>)> {

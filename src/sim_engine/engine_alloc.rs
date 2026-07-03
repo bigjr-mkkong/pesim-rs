@@ -1,41 +1,47 @@
 use crate::sim_engine::sim::engine_cfg;
 use std::collections::HashMap;
+use std::ops::Range;
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 enum EngineAllocKind {
-    Cgo,
-    Fgo,
+    CGO,
+    FGO,
 }
 
 pub struct engine_alloc {
-    max_ch: u64,
-    max_ra: u64,
-    max_bg: u64,
-    max_ba: u64,
+    channels: Range<u64>,
+    ranks: Range<u64>,
+    bank_groups: Range<u64>,
+    banks: Range<u64>,
     winner: Option<u64>,
     table: HashMap<(u64, EngineAllocKind), Vec<engine_cfg>>,
 }
 
 impl engine_alloc {
-    pub fn new(max_ch: u64, max_ra: u64, max_bg: u64, max_ba: u64) -> Self {
+    pub fn new(
+        channels: Range<u64>,
+        ranks: Range<u64>,
+        bank_groups: Range<u64>,
+        banks: Range<u64>,
+    ) -> Self {
         Self {
-            max_ch,
-            max_ra,
-            max_bg,
-            max_ba,
+            channels,
+            ranks,
+            bank_groups,
+            banks,
             winner: None,
             table: HashMap::new(),
         }
     }
 
     pub fn alloc_cgo(&mut self, asid: u64) -> Vec<engine_cfg> {
-        self.alloc(asid, EngineAllocKind::Cgo, |ch, ra, bg, ba| {
+        self.alloc(asid, EngineAllocKind::CGO, |ch, ra, bg, ba| {
             engine_cfg::CGO { ch, ra, bg, ba }
         })
     }
 
     pub fn alloc_fgo(&mut self, asid: u64) -> Vec<engine_cfg> {
-        self.alloc(asid, EngineAllocKind::Fgo, |ch, ra, bg, ba| {
+        self.alloc(asid, EngineAllocKind::FGO, |ch, ra, bg, ba| {
             engine_cfg::FGO { ch, ra, bg, ba }
         })
     }
@@ -62,10 +68,10 @@ impl engine_alloc {
         }
 
         let mut allocated = Vec::new();
-        for ch in 0..self.max_ch {
-            for ra in 0..self.max_ra {
-                for bg in 0..self.max_bg {
-                    for ba in 0..self.max_ba {
+        for ch in self.channels.clone() {
+            for ra in self.ranks.clone() {
+                for bg in self.bank_groups.clone() {
+                    for ba in self.banks.clone() {
                         allocated.push(make_cfg(ch, ra, bg, ba));
                     }
                 }
@@ -74,5 +80,37 @@ impl engine_alloc {
 
         self.table.insert(key, allocated.clone());
         allocated
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn allocation_uses_only_configured_coordinate_ranges() {
+        let mut allocator = engine_alloc::new(1..3, 2..4, 3..5, 4..6);
+
+        let allocated = allocator.alloc_cgo(1);
+
+        assert_eq!(allocated.len(), 16);
+        assert!(allocated.contains(&engine_cfg::CGO {
+            ch: 1,
+            ra: 2,
+            bg: 3,
+            ba: 4,
+        }));
+        assert!(allocated.contains(&engine_cfg::CGO {
+            ch: 2,
+            ra: 3,
+            bg: 4,
+            ba: 5,
+        }));
+        assert!(!allocated.contains(&engine_cfg::CGO {
+            ch: 0,
+            ra: 2,
+            bg: 3,
+            ba: 4,
+        }));
     }
 }
