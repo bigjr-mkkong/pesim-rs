@@ -22,6 +22,12 @@ impl Engine {
 }
 
 #[test]
+fn boot_controller_is_guarded_by_processor_kind() {
+    assert!(Engine::new_cgo().cgo_boot.is_some());
+    assert!(Engine::new_fgo().cgo_boot.is_none());
+}
+
+#[test]
 fn engine_runs_pim_load_through_mem_fsm_and_dram_portal() {
     let mut engine = Engine::new_cgo();
     engine
@@ -330,14 +336,25 @@ fn cgo_start_gates_cpu_execution_and_query_reports_finished() {
         .unwrap();
     engine.get_cpu().get_RF().write_vregs(1, [3; 4]);
     engine.get_cpu().get_RF().write_vregs(2, [4; 4]);
-    engine.get_cpu().get_imem().flash_in(&[
-        inst::ADD128 {
-            rd: 3,
-            rs1: 1,
-            rs2: 2,
-        },
-        inst::EqualExit { rd: 3, rs1: 3 },
-    ]);
+    engine
+        .get_cpu()
+        .get_fmem()
+        .mem_write_data(0, &[8, 1, 0, 0])
+        .unwrap();
+    for chunk in 1..8 {
+        engine
+            .get_cpu()
+            .get_fmem()
+            .mem_write_data(chunk, &[0; 4])
+            .unwrap();
+    }
+    let add = (0x1_u32 << 12) | (3 << 9) | (1 << 6) | (2 << 3);
+    let equal_exit = (0xc_u32 << 12) | (3 << 9) | (3 << 6);
+    engine
+        .get_cpu()
+        .get_fmem()
+        .mem_write_data(8, &[add | (equal_exit << 16), 0, 0, 0])
+        .unwrap();
 
     for _ in 0..8 {
         engine.tick();
@@ -368,6 +385,33 @@ fn cgo_start_gates_cpu_execution_and_query_reports_finished() {
             .get_addr(),
         start_addr
     );
+    assert!(!engine.get_cpu().is_started());
+
+    let mut boot_ticks = 0;
+    for tick in 1..=10_000 {
+        engine.tick();
+        assert_eq!(engine.get_cpu().get_RF().read_vregs(3), [0; 4]);
+        if engine.get_cpu().is_started() {
+            boot_ticks = tick;
+            break;
+        }
+    }
+    assert!(
+        boot_ticks > 1,
+        "boot must not complete in the start-command tick"
+    );
+    assert!(matches!(
+        engine.get_cpu().get_imem().read_inst(0),
+        Some(inst::ADD128 {
+            rd: 3,
+            rs1: 1,
+            rs2: 2
+        })
+    ));
+    assert!(matches!(
+        engine.get_cpu().get_imem().read_inst(1),
+        Some(inst::EqualExit { rd: 3, rs1: 3 })
+    ));
 
     for _ in 0..10_000 {
         engine.tick();

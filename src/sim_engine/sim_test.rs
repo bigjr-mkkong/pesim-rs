@@ -499,6 +499,33 @@ fn sim_multithread_pimonly() {
 }
 
 #[test]
+fn sim_parallel_tick_ticks_each_engine_once() {
+    let mut sim = Sim::new();
+    sim.set_mode_for_test(SimMode::Pim);
+
+    let (_first_addr, first_cfg) = find_addr_for_new_cgo_cfg(&mut sim, &[]);
+    let (_second_addr, second_cfg) = find_addr_for_new_cgo_cfg(&mut sim, &[first_cfg]);
+
+    sim.add_engine_with_scheduling_for_test(first_cfg, EngineSchedulingMode::HostOnly);
+    sim.add_engine_with_scheduling_for_test(second_cfg, EngineSchedulingMode::HostOnly);
+
+    sim.tick();
+
+    let expected_workers = std::thread::available_parallelism()
+        .map(usize::from)
+        .unwrap_or(1)
+        .min(sim.engines.len());
+    assert_eq!(sim.engine_tick_pool_threads, expected_workers);
+    assert_eq!(sim.engines.get(&first_cfg).unwrap().clock_cycle(), 1);
+    assert_eq!(sim.engines.get(&second_cfg).unwrap().clock_cycle(), 1);
+
+    sim.tick();
+
+    assert_eq!(sim.engines.get(&first_cfg).unwrap().clock_cycle(), 2);
+    assert_eq!(sim.engines.get(&second_cfg).unwrap().clock_cycle(), 2);
+}
+
+#[test]
 fn sim_pim_host_together() {
     /*
      * This test will create one engine and run vecadd on it.
@@ -816,6 +843,17 @@ fn sim_broadcasts_cgo_commands_only_to_cgo_engines() {
     assert_eq!(completions.len(), 1);
     assert_eq!(completions[0].get_addr(), start_addr);
     assert!(!completions[0].is_read());
+    assert!(!sim.engine_mut_for_test(first_cgo).get_cpu().is_started());
+    assert!(!sim.engine_mut_for_test(second_cgo).get_cpu().is_started());
+
+    for _ in 0..10_000 {
+        sim.tick();
+        let first_started = sim.engine_mut_for_test(first_cgo).get_cpu().is_started();
+        let second_started = sim.engine_mut_for_test(second_cgo).get_cpu().is_started();
+        if first_started && second_started {
+            break;
+        }
+    }
     assert!(sim.engine_mut_for_test(first_cgo).get_cpu().is_started());
     assert!(sim.engine_mut_for_test(second_cgo).get_cpu().is_started());
 

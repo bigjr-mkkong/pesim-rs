@@ -392,7 +392,8 @@ mod tests {
             pimcpu.tick();
         }
 
-        // Replace this with your actual halted/exited API.
+        assert_eq!(pimcpu.get_RF().read_vregs(4), [15; 4]);
+        assert!(pimcpu.is_finished());
     }
 
     #[test]

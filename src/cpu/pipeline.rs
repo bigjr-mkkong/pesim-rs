@@ -34,6 +34,7 @@ pub struct CPU {
     ext_signal_delay_remaining: u64,
     pause_ready_delay_started: bool,
     started: bool,
+    prog_end_seen: bool,
     finished: bool,
 }
 
@@ -72,6 +73,7 @@ impl CPU {
             ext_signal_delay_remaining: 0,
             pause_ready_delay_started: false,
             started: false,
+            prog_end_seen: false,
             finished: false,
         }
     }
@@ -195,6 +197,10 @@ impl CPU {
     }
 
     pub fn tick(&mut self) {
+        if self.finished {
+            return;
+        }
+
         let (_, wb_sigreq, wb_archop) = self.eval_WB(&self.mem_wb_rf);
         self.pipeline_ctrl.submit_signal(Some(wb_sigreq));
 
@@ -221,7 +227,7 @@ impl CPU {
         let pipeline_op = self.pipeline_ctrl.get_decision();
         let winner_reason = self.pipeline_ctrl.last_winner_reason();
         if winner_reason == Some(signal_reason::prog_end) {
-            self.finished = true;
+            self.prog_end_seen = true;
         }
 
         // This function will update self.ready4sig() according to defined delay cycle
@@ -316,6 +322,14 @@ impl CPU {
             pipeline_action::Normal => self.if_id_rf = if_id_next,
             pipeline_action::Stall => {}
             pipeline_action::Flush | pipeline_action::END => self.if_id_rf.invalidate(),
+        }
+
+        if self.prog_end_seen
+            && !self.ex_agu_rf.is_valid()
+            && !self.agu_mem_rf.is_valid()
+            && !self.mem_wb_rf.is_valid()
+        {
+            self.finished = true;
         }
     }
 }

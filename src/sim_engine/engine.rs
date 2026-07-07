@@ -1,5 +1,6 @@
 use crate::CPU;
 use crate::PE::pe_top::PE;
+use crate::cpu::boot_fsm::CPU_boot_FSM;
 use crate::dsim3_paths;
 use crate::memory::dramsim3_wrapper::dramsim3_wrapper;
 use crate::memory::flat_memory::PIM_ENTRIES_PER_CACHELINE;
@@ -74,6 +75,7 @@ pub struct Engine {
     pseudo_bank: u64,
     pseudo_bank_base_cacheline: u64,
     processor: EngineProcessor,
+    cgo_boot: Option<CPU_boot_FSM>,
     host_pool: VecDeque<dram_req>,
     host_complete_queue: VecDeque<dram_req>,
     cgo_cmd_queue: VecDeque<(CGO_Cmd, dram_req)>,
@@ -154,6 +156,8 @@ impl Engine {
         let mut dram_port = dram_portal::new();
         dram_port.set_mode(portal_mode::PIM);
         let processor = make_processor(dram_port.clone());
+        let cgo_boot = matches!(&processor, EngineProcessor::CGO(_))
+            .then(|| CPU_boot_FSM::new(dram_port.clone(), ch, ra, bg, ba, pb));
 
         let (cfg_path, out_dir) = dsim3_paths();
         let mut dsim3 = dramsim3_wrapper::new_for_pseudo_bank(
@@ -178,6 +182,7 @@ impl Engine {
             pseudo_bank_base_cacheline,
             processor,
             dram_port,
+            cgo_boot,
             host_pool: VecDeque::new(),
             host_complete_queue: VecDeque::new(),
             cgo_cmd_queue: VecDeque::new(),
@@ -280,7 +285,22 @@ impl Engine {
         }
     }
 
-    fn switch_delay_done(&self) -> bool {
+    pub(crate) fn harness_CGO_finished(&self) -> bool {
+        matches!(&self.processor, EngineProcessor::CGO(cpu) if cpu.is_finished())
+    }
+
+    pub(crate) fn harness_read_CGO_outputs(&self) -> Option<Vec<[u32; 4]>> {
+        let EngineProcessor::CGO(cpu) = &self.processor else {
+            return None;
+        };
+        let (base, bound) = cpu.agu.get_entry(3)?;
+
+        (0..bound)
+            .map(|offset| cpu.fmem.mem_read_data(base + offset))
+            .collect()
+    }
+
+    fn switch_delay_done(&mut self) -> bool {
         match self.last_service_mode {
             EngineMode::PIM => {
                 let processor_ready = match &self.processor {
@@ -639,7 +659,9 @@ impl Engine {
                 pe.push_host_req(req, instruction)
             }
             (EngineProcessor::CGO(_), pim_cmd::CGO_Start) => {
-                self.init_mirroring_enabled = false;
+                if self.scheduling_mode != EngineSchedulingMode::HostOnly {
+                    self.init_mirroring_enabled = false;
+                }
                 self.cgo_cmd_queue.push_back((CGO_Cmd::Start, req));
             }
             (EngineProcessor::CGO(_), pim_cmd::CGO_Query) => {
@@ -720,21 +742,55 @@ impl Engine {
         }
 
         while let Some((cmd, mut req)) = self.cgo_cmd_queue.pop_front() {
-            let cpu = match &mut self.processor {
-                EngineProcessor::CGO(cpu) => cpu,
-                EngineProcessor::FGO(_) => unreachable!(),
-            };
-
             match cmd {
                 CGO_Cmd::Start => {
-                    cpu.start();
+                    let accepted = self.scheduling_mode != EngineSchedulingMode::HostOnly
+                        && self
+                            .cgo_boot
+                            .as_mut()
+                            .expect("CGO engine must own a boot controller")
+                            .set_on();
+                    if !accepted {
+                        eprintln!(
+                            "PIM_ERROR reason=irregular_cgo_start ch={} rank={} bank_group={} bank={} pseudo_bank={}",
+                            self.ch, self.ra, self.bg, self.ba, self.pseudo_bank
+                        );
+                    }
                 }
                 CGO_Cmd::Query => {
+                    let cpu = match &self.processor {
+                        EngineProcessor::CGO(cpu) => cpu,
+                        EngineProcessor::FGO(_) => unreachable!(),
+                    };
                     req.set_payload_word0(cpu.is_finished() as u64);
                 }
             }
 
             self.cgo_cmd_complete_queue.push_back(req);
+        }
+    }
+
+    fn tick_cgo_processor(&mut self) {
+        let EngineProcessor::CGO(cpu) = &mut self.processor else {
+            unreachable!("CGO scheduling requires a CGO processor");
+        };
+
+        if cpu.is_started() {
+            cpu.tick();
+            return;
+        }
+
+        if self.mode != EngineMode::PIM {
+            return;
+        }
+
+        let boot = self
+            .cgo_boot
+            .as_mut()
+            .expect("CGO engine must own a boot controller");
+        boot.tick(&cpu.fmem, &mut cpu.agu, &mut cpu.imem, &mut cpu.RF);
+        if boot.has_finished() {
+            cpu.start();
         }
     }
 
@@ -784,11 +840,7 @@ impl Engine {
                 panic!("cannot tick an engine before configuring its scheduling mode")
             }
             EngineSchedulingMode::CGO_only | EngineSchedulingMode::Host_CGO_share => {
-                match &mut self.processor {
-                    EngineProcessor::CGO(cpu) if cpu.is_started() => cpu.tick(),
-                    EngineProcessor::CGO(_) => {}
-                    EngineProcessor::FGO(_) => unreachable!(),
-                }
+                self.tick_cgo_processor();
             }
             EngineSchedulingMode::Host_FGO_share => {
                 if matches!(self.mode, EngineMode::PIM)

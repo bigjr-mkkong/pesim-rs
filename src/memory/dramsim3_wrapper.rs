@@ -299,8 +299,19 @@ impl dramsim3_wrapper {
         }
     }
 
-    pub fn is_drained(&self) -> bool {
-        self.pend_read.is_empty() && self.pend_write.is_empty()
+    /*
+     * FIXME
+     * This function is a newly added function for dramsim3
+     * I would like to see independent testcase to verify if this function to behave as what it
+     * suppose to be.
+     *
+     * Testcase can be push n requests into dsim3, then verify before n requests all returned,
+     * is_drained is always false, and after they returned is_drained is always true.
+     */
+    pub fn is_drained(&mut self) -> bool {
+        self.pend_read.is_empty()
+            && self.pend_write.is_empty()
+            && dramsim3_ext::IsDrained(self.ms.pin_mut())
     }
 
     pub fn WillAcceptTransaction(&mut self, addr: u64, is_write: bool) -> bool {

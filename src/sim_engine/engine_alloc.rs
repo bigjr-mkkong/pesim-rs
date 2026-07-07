@@ -117,6 +117,7 @@ impl engine_alloc {
             .collect::<Vec<_>>();
 
         self.table.insert(key, allocated.clone());
+        println!("Allocated {} of engines", allocated.len());
         allocated
     }
 }

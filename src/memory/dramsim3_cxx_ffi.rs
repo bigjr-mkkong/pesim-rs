@@ -42,6 +42,7 @@ pub mod dramsim3_ffi {
         pub fn GetClock(self: Pin<&mut dramsim3_ext>) -> i32;
 
         pub fn GetPimMode(self: Pin<&mut dramsim3_ext>) -> bool;
+        pub fn IsDrained(self: Pin<&mut dramsim3_ext>) -> bool;
         pub fn SetPimMode(self: Pin<&mut dramsim3_ext>, new_mode: bool);
 
         pub fn GetBytes(

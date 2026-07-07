@@ -244,14 +244,14 @@ pub extern "C" fn pesim_enqueue_with_data(
         /*
          * For endieness testing
          */
-        if is_write && payload.payload_sz_bytes == 64{
-            for (idx, i) in payload.dword_payload.iter().enumerate() {
-                let lo32: u32 = *i as u32;
-                let hi32: u32 = (*i>>32) as u32;
-                println!("lo32 for dword {} is: {:x}", idx, lo32);
-                println!("hi for dword {} is: {:x}", idx, hi32);
-            }
-        }
+        // if is_write && payload.payload_sz_bytes == 64{
+        //     for (idx, i) in payload.dword_payload.iter().enumerate() {
+        //         let lo32: u32 = *i as u32;
+        //         let hi32: u32 = (*i>>32) as u32;
+        //         println!("lo32 for dword {} is: {:x}", idx, lo32);
+        //         println!("hi for dword {} is: {:x}", idx, hi32);
+        //     }
+        // }
         true
     })
 }

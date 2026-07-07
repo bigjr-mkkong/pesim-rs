@@ -4,6 +4,7 @@ pub mod ID;
 pub mod IF;
 pub mod MEM;
 pub mod WB;
+pub mod boot_fsm;
 pub mod pipeline;
 #[cfg(test)]
 pub mod pipeline_test;

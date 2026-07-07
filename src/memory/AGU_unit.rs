@@ -3,6 +3,7 @@ use std::collections::HashMap;
 
 pub const IDX_BITS: usize = 4;
 pub const BOUND_BITS: usize = 28;
+pub const AGU_ENTRY_COUNT: usize = 1 << IDX_BITS;
 
 #[macro_export]
 macro_rules! check_bound {
@@ -54,6 +55,17 @@ impl AGU_unit {
                     bound: bound,
                 });
             }
+        }
+    }
+
+    pub fn get_entry(&self, id: u8) -> Option<(u32, u32)> {
+        if usize::from(id) >= AGU_ENTRY_COUNT {
+            return None;
+        }
+
+        match self.table.get(&id) {
+            Some(AGU_entry::Ent { base, bound }) => Some((*base, *bound)),
+            Some(AGU_entry::NA) | None => None,
         }
     }
 

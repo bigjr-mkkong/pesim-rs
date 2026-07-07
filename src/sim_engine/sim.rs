@@ -50,6 +50,9 @@ use crate::sim_engine::engine_alloc::{
 };
 use crate::sim_engine::request_router::{PIM_CMD_PAGE_BASE, decode_pim_cmd, pim_cmd};
 use crate::sim_engine::timing_harness::timing_harness;
+use rayon::ThreadPool;
+use rayon::ThreadPoolBuilder;
+use rayon::prelude::*;
 use std::collections::HashMap;
 
 const PIM_CMD_PAYLOAD_SIZE_BYTES: u32 = std::mem::size_of::<u64>() as u32;
@@ -99,6 +102,8 @@ pub struct Sim {
     allocator: engine_alloc,
     //Preset of Engine scheduling mode for allocated CGO engine
     cgo_alloc_scheduling_mode: EngineSchedulingMode,
+    engine_tick_pool: Option<ThreadPool>,
+    engine_tick_pool_threads: usize,
 }
 
 impl Sim {
@@ -121,6 +126,8 @@ impl Sim {
             sim_mode: SimMode::Pim,
             allocator,
             cgo_alloc_scheduling_mode: EngineSchedulingMode::Host_CGO_share,
+            engine_tick_pool: None,
+            engine_tick_pool_threads: 0,
         }
     }
 
@@ -427,6 +434,10 @@ impl Sim {
                     self.harness
                         .log_FGO_receive(*cfg, engine.clock_cycle(), req_id, instruction);
                 }
+                if matches!(cmd, pim_cmd::CGO_Start) {
+                    self.harness
+                        .log_CGO_start(*cfg, engine.clock_cycle(), req_id);
+                }
                 target_count += 1;
             }
         }
@@ -450,6 +461,14 @@ impl Sim {
 
     fn collect_engine_completion(&mut self) {
         for (cfg, engine) in self.engines.iter_mut() {
+            if self.harness.is_tracking_CGO(*cfg) && engine.harness_CGO_finished() {
+                self.harness.log_CGO_finish(
+                    *cfg,
+                    engine.clock_cycle().saturating_sub(1),
+                    engine.harness_read_CGO_outputs(),
+                );
+            }
+
             while let Some(req) = engine.get_host_complete() {
                 let cmd = match decode_pim_cmd(req.get_addr(), req.get_payload()) {
                     Ok(Some(cmd @ (pim_cmd::FGO(_) | pim_cmd::CGO_Start | pim_cmd::CGO_Query))) => {
@@ -506,6 +525,62 @@ impl Sim {
                 }
             }
         }
+    }
+
+    fn engine_tick_worker_count(&self) -> usize {
+        let engine_count = self.engines.len();
+        if engine_count == 0 {
+            return 0;
+        }
+
+        std::thread::available_parallelism()
+            .map(usize::from)
+            .unwrap_or(1)
+            .min(engine_count)
+    }
+
+    fn ensure_engine_tick_pool(&mut self) {
+        let worker_count = self.engine_tick_worker_count();
+        if worker_count == 0 || self.engine_tick_pool_threads == worker_count {
+            return;
+        }
+
+        self.engine_tick_pool = Some(
+            ThreadPoolBuilder::new()
+                .num_threads(worker_count)
+                .thread_name(|idx| format!("pesim-engine-tick-{idx}"))
+                .build()
+                .unwrap_or_else(|err| panic!("cannot build engine tick thread pool: {err}")),
+        );
+        self.engine_tick_pool_threads = worker_count;
+    }
+
+    fn tick_engines_parallel(&mut self) {
+        if self.engines.is_empty() {
+            return;
+        }
+
+        self.ensure_engine_tick_pool();
+        let Self {
+            engines,
+            engine_tick_pool,
+            ..
+        } = self;
+        let pool = engine_tick_pool
+            .as_ref()
+            .expect("engine tick pool must exist when engines are present");
+
+        pool.install(|| {
+            engines.par_iter_mut().for_each(|(cfg, engine)| {
+                let cfg = *cfg;
+                if let Err(payload) =
+                    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| engine.tick()))
+                {
+                    eprintln!("PIM_ERROR reason=engine_tick_panic cfg={cfg:?}");
+                    std::panic::resume_unwind(payload);
+                }
+            });
+        });
     }
 
     fn enqueue_regular_memory(&mut self, mut req: dram_req, payload_sz_bytes: u32) {
@@ -580,11 +655,7 @@ impl Sim {
             return;
         }
 
-        std::thread::scope(|scope| {
-            for engine in self.engines.values_mut() {
-                scope.spawn(move || engine.tick());
-            }
-        });
+        self.tick_engines_parallel();
         self.collect_engine_completion();
 
         // In PESIM mode, mapped host completions come from engines. Keep only
