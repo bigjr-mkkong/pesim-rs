@@ -1,5 +1,7 @@
 use crate::cpu::RF::arch_rf;
 use crate::cpu::imem::IMEM;
+#[cfg(test)]
+use crate::cpu::pimcpu_types::DMAop;
 use crate::cpu::pimcpu_types::{CPU_stages, arch_action, arch_dest};
 
 use crate::cpu::AGU::{AGU_MEM_rf, AGU_stop_FSM};
@@ -8,11 +10,22 @@ use crate::cpu::ID::{ID_EX_rf, ID_jump_FSM};
 use crate::cpu::IF::IF_ID_rf;
 use crate::cpu::MEM::{MEM_WB_RF, MEM_stop_FSM};
 use crate::cpu::signal_scoreboard::{
-    ExternalPause_FSM, pipeline_action, sig_resolver, signal_reason, signal_req,
+    ExternalPause_FSM, SigFSM, pipeline_action, sig_resolver, signal_reason, signal_req,
 };
 use crate::memory::AGU_unit::AGU_unit;
 use crate::memory::flat_memory::cpu_flat_mem;
 use crate::memory::mem_portal::dram_portal;
+
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct PipelineValidationProbe {
+    pub(crate) jump_id_completions: u64,
+    pub(crate) equal_exit_ex_completions: u64,
+    pub(crate) mem_completions: u64,
+    pub(crate) store_mem_completions: u64,
+    pub(crate) wb_completions: u64,
+    pub(crate) latch_updates: u64,
+}
 
 pub struct CPU {
     pub(crate) imem: IMEM,
@@ -33,13 +46,16 @@ pub struct CPU {
     resume_ready_delay_cycles: u64,
     ext_signal_delay_remaining: u64,
     pause_ready_delay_started: bool,
+    resume_delay_pending: bool,
     started: bool,
     prog_end_seen: bool,
     finished: bool,
+    #[cfg(test)]
+    validation_probe: PipelineValidationProbe,
 }
 
 impl CPU {
-    fn build(mem_stop_fsm: MEM_stop_FSM) -> Self {
+    fn build(mem_stop_fsm: impl SigFSM + 'static) -> Self {
         let mut pipeline_ctrl = sig_resolver::new();
         pipeline_ctrl.add_new_fsm(signal_reason::jump_resolution, Box::new(ID_jump_FSM::new()));
         pipeline_ctrl.add_new_fsm(signal_reason::prog_end, Box::new(EX_stop_FSM::new()));
@@ -72,15 +88,23 @@ impl CPU {
             resume_ready_delay_cycles: 0,
             ext_signal_delay_remaining: 0,
             pause_ready_delay_started: false,
+            resume_delay_pending: false,
             started: false,
             prog_end_seen: false,
             finished: false,
+            #[cfg(test)]
+            validation_probe: PipelineValidationProbe::default(),
         }
     }
 
     #[cfg(test)]
     pub fn new() -> Self {
         Self::build(MEM_stop_FSM::new())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn new_with_mem_stop_fsm(mem_stop_fsm: impl SigFSM + 'static) -> Self {
+        Self::build(mem_stop_fsm)
     }
 
     pub fn new_with_dram_port(dram_port: dram_portal) -> Self {
@@ -105,20 +129,34 @@ impl CPU {
         &mut self.agu
     }
 
+    #[cfg(test)]
+    pub(crate) fn validation_probe(&self) -> PipelineValidationProbe {
+        self.validation_probe
+    }
+
     pub fn signal_pause(&mut self) {
         self.ext_pause_requested = true;
         self.ready4ext_sig = false;
         self.pause_ready_delay_started = false;
         self.ext_signal_delay_remaining = 0;
+        self.resume_delay_pending = false;
     }
 
     pub fn signal_resume(&mut self) {
-        self.ext_pause_requested = false;
         self.pause_ready_delay_started = false;
         self.ext_signal_delay_remaining = self.resume_ready_delay_cycles;
-        self.ready4ext_sig = self.resume_ready_delay_cycles == 0;
-        self.pipeline_ctrl
-            .clear_active_signal(signal_reason::external_pause);
+        self.resume_delay_pending = self.resume_ready_delay_cycles != 0;
+        self.ready4ext_sig = !self.resume_delay_pending;
+
+        if self.resume_delay_pending {
+            // Keep the external-pause signal active until every configured
+            // resume-delay cycle has held the pipeline.
+            self.ext_pause_requested = true;
+        } else {
+            self.ext_pause_requested = false;
+            self.pipeline_ctrl
+                .clear_active_signal(signal_reason::external_pause);
+        }
     }
 
     // This function will let engine to set fast-switch parameter or regular PREC+ACT
@@ -145,6 +183,14 @@ impl CPU {
 
     // Internal pause-resume delay timing simulation
     fn update_extsig_rdy(&mut self, winner_reason: Option<signal_reason>) {
+        if self.resume_delay_pending {
+            if self.ext_signal_delay_remaining > 0 {
+                self.ext_signal_delay_remaining -= 1;
+            }
+            self.ready4ext_sig = false;
+            return;
+        }
+
         if self.ext_signal_delay_remaining > 0 {
             self.ext_signal_delay_remaining -= 1;
             self.ready4ext_sig = false;
@@ -173,6 +219,16 @@ impl CPU {
         }
     }
 
+    fn prepare_resume_tick(&mut self) {
+        if self.resume_delay_pending && self.ext_signal_delay_remaining == 0 {
+            self.resume_delay_pending = false;
+            self.ext_pause_requested = false;
+            self.ready4ext_sig = true;
+            self.pipeline_ctrl
+                .clear_active_signal(signal_reason::external_pause);
+        }
+    }
+
     fn check_ext_pause(
         &self,
         sig_req: signal_req,
@@ -197,6 +253,8 @@ impl CPU {
     }
 
     pub fn tick(&mut self) {
+        self.prepare_resume_tick();
+
         if self.finished {
             return;
         }
@@ -241,6 +299,37 @@ impl CPU {
                 .copied()
                 .unwrap_or(pipeline_action::Normal)
         };
+
+        #[cfg(test)]
+        {
+            if self.if_id_rf.is_valid()
+                && winner_reason == Some(signal_reason::jump_resolution)
+                && stage_action(CPU_stages::ID) == pipeline_action::Normal
+            {
+                self.validation_probe.jump_id_completions += 1;
+            }
+            if self.id_ex_rf.is_valid()
+                && winner_reason == Some(signal_reason::prog_end)
+                && stage_action(CPU_stages::EX) == pipeline_action::Normal
+            {
+                self.validation_probe.equal_exit_ex_completions += 1;
+            }
+            if self.agu_mem_rf.is_valid()
+                && stage_action(CPU_stages::MEM) == pipeline_action::Normal
+            {
+                let dma_op = self.agu_mem_rf.get_dma_op();
+                if !matches!(dma_op, DMAop::NOP) {
+                    self.validation_probe.mem_completions += 1;
+                }
+                if matches!(dma_op, DMAop::WRITE_VEC { .. } | DMAop::WRITE_FPTR { .. }) {
+                    self.validation_probe.store_mem_completions += 1;
+                }
+            }
+            if self.mem_wb_rf.is_valid() && stage_action(CPU_stages::WB) == pipeline_action::Normal
+            {
+                self.validation_probe.wb_completions += 1;
+            }
+        }
 
         let mut arch_ops = Vec::new();
         let mut collect_stage_ops = |stage, ops: Vec<arch_action>| {
@@ -295,33 +384,91 @@ impl CPU {
                 if self.mem_wb_rf.is_valid() {
                     self.wb_forward_rf = self.mem_wb_rf;
                 }
+                #[cfg(test)]
+                {
+                    self.validation_probe.latch_updates += 1;
+                }
             }
             pipeline_action::Stall => {}
-            pipeline_action::Flush | pipeline_action::END => self.mem_wb_rf.invalidate(),
+            pipeline_action::Flush | pipeline_action::END => {
+                self.mem_wb_rf.invalidate();
+                #[cfg(test)]
+                {
+                    self.validation_probe.latch_updates += 1;
+                }
+            }
         }
 
         match stage_op(stage_action(CPU_stages::AGU), stage_action(CPU_stages::MEM)) {
-            pipeline_action::Normal => self.agu_mem_rf = agu_mem_next,
+            pipeline_action::Normal => {
+                self.agu_mem_rf = agu_mem_next;
+                #[cfg(test)]
+                {
+                    self.validation_probe.latch_updates += 1;
+                }
+            }
             pipeline_action::Stall => {}
-            pipeline_action::Flush | pipeline_action::END => self.agu_mem_rf.invalidate(),
+            pipeline_action::Flush | pipeline_action::END => {
+                self.agu_mem_rf.invalidate();
+                #[cfg(test)]
+                {
+                    self.validation_probe.latch_updates += 1;
+                }
+            }
         }
 
         match stage_op(stage_action(CPU_stages::EX), stage_action(CPU_stages::AGU)) {
-            pipeline_action::Normal => self.ex_agu_rf = ex_agu_next,
+            pipeline_action::Normal => {
+                self.ex_agu_rf = ex_agu_next;
+                #[cfg(test)]
+                {
+                    self.validation_probe.latch_updates += 1;
+                }
+            }
             pipeline_action::Stall => {}
-            pipeline_action::Flush | pipeline_action::END => self.ex_agu_rf.invalidate(),
+            pipeline_action::Flush | pipeline_action::END => {
+                self.ex_agu_rf.invalidate();
+                #[cfg(test)]
+                {
+                    self.validation_probe.latch_updates += 1;
+                }
+            }
         }
 
         match stage_op(stage_action(CPU_stages::ID), stage_action(CPU_stages::EX)) {
-            pipeline_action::Normal => self.id_ex_rf = id_ex_next,
+            pipeline_action::Normal => {
+                self.id_ex_rf = id_ex_next;
+                #[cfg(test)]
+                {
+                    self.validation_probe.latch_updates += 1;
+                }
+            }
             pipeline_action::Stall => {}
-            pipeline_action::Flush | pipeline_action::END => self.id_ex_rf.invalidate(),
+            pipeline_action::Flush | pipeline_action::END => {
+                self.id_ex_rf.invalidate();
+                #[cfg(test)]
+                {
+                    self.validation_probe.latch_updates += 1;
+                }
+            }
         }
 
         match stage_op(stage_action(CPU_stages::IF), stage_action(CPU_stages::ID)) {
-            pipeline_action::Normal => self.if_id_rf = if_id_next,
+            pipeline_action::Normal => {
+                self.if_id_rf = if_id_next;
+                #[cfg(test)]
+                {
+                    self.validation_probe.latch_updates += 1;
+                }
+            }
             pipeline_action::Stall => {}
-            pipeline_action::Flush | pipeline_action::END => self.if_id_rf.invalidate(),
+            pipeline_action::Flush | pipeline_action::END => {
+                self.if_id_rf.invalidate();
+                #[cfg(test)]
+                {
+                    self.validation_probe.latch_updates += 1;
+                }
+            }
         }
 
         if self.prog_end_seen

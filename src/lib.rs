@@ -305,3 +305,7 @@ pub extern "C" fn pesim_tick(sim: *mut PESim_body) {
 #[cfg(test)]
 #[path = "lib_test.rs"]
 mod lib_test;
+
+#[cfg(test)]
+#[path = "pipeline-validation.rs"]
+mod pipeline_validation;
