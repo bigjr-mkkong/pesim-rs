@@ -50,14 +50,12 @@ impl SigFSM for DeterministicMemStopFsm {
                 (CPU_stages::IF, pipeline_action::Stall),
                 (CPU_stages::ID, pipeline_action::Stall),
                 (CPU_stages::EX, pipeline_action::Stall),
-                (CPU_stages::AGU, pipeline_action::Stall),
                 (CPU_stages::MEM, pipeline_action::Stall),
             ]),
             DeterministicMemState::WriteBack => HashMap::from([
                 (CPU_stages::IF, pipeline_action::Stall),
                 (CPU_stages::ID, pipeline_action::Stall),
                 (CPU_stages::EX, pipeline_action::Stall),
-                (CPU_stages::AGU, pipeline_action::Stall),
             ]),
             DeterministicMemState::Idle => HashMap::new(),
         }
@@ -178,14 +176,14 @@ macro_rules! instruction_latency_validation {
 }
 
 instruction_latency_validation!(
-    nop_completes_at_wb_cycle_6,
+    nop_completes_at_wb_cycle_5,
     "NOP",
     inst::NOP,
     CompletionProbe::WriteBack,
-    6
+    5
 );
 instruction_latency_validation!(
-    add128_completes_at_wb_cycle_6,
+    add128_completes_at_wb_cycle_5,
     "ADD128",
     inst::ADD128 {
         rd: 4,
@@ -193,10 +191,10 @@ instruction_latency_validation!(
         rs2: 2
     },
     CompletionProbe::WriteBack,
-    6
+    5
 );
 instruction_latency_validation!(
-    sub128_completes_at_wb_cycle_6,
+    sub128_completes_at_wb_cycle_5,
     "SUB128",
     inst::SUB128 {
         rd: 4,
@@ -204,10 +202,10 @@ instruction_latency_validation!(
         rs2: 2
     },
     CompletionProbe::WriteBack,
-    6
+    5
 );
 instruction_latency_validation!(
-    mul128_completes_at_wb_cycle_6,
+    mul128_completes_at_wb_cycle_5,
     "MUL128",
     inst::MUL128 {
         rd: 4,
@@ -215,10 +213,10 @@ instruction_latency_validation!(
         rs2: 2
     },
     CompletionProbe::WriteBack,
-    6
+    5
 );
 instruction_latency_validation!(
-    and128_completes_at_wb_cycle_6,
+    and128_completes_at_wb_cycle_5,
     "AND128",
     inst::AND128 {
         rd: 4,
@@ -226,38 +224,38 @@ instruction_latency_validation!(
         rs2: 2
     },
     CompletionProbe::WriteBack,
-    6
+    5
 );
 instruction_latency_validation!(
-    ld128_completes_at_wb_cycle_7,
+    ld128_completes_at_wb_cycle_6,
     "LD128",
     inst::LD128 { rd: 4, frs: 1 },
     CompletionProbe::WriteBack,
-    7
+    6
 );
 instruction_latency_validation!(
-    st128_completes_at_mem_cycle_6,
+    st128_completes_at_mem_cycle_5,
     "ST128",
     inst::ST128 { rs: 2, frd: 1 },
     CompletionProbe::StoreMem,
-    6
+    5
 );
 instruction_latency_validation!(
-    fatptr_ld_completes_at_wb_cycle_7,
+    fatptr_ld_completes_at_wb_cycle_6,
     "FatPtrLD",
     inst::FatPtrLD { frd: 4, frs: 2 },
     CompletionProbe::WriteBack,
-    7
-);
-instruction_latency_validation!(
-    fatptr_st_completes_at_mem_cycle_6,
-    "FatPtrST",
-    inst::FatPtrST { frd: 2, frs: 3 },
-    CompletionProbe::StoreMem,
     6
 );
 instruction_latency_validation!(
-    fatptr_add_completes_at_wb_cycle_6,
+    fatptr_st_completes_at_mem_cycle_5,
+    "FatPtrST",
+    inst::FatPtrST { frd: 2, frs: 3 },
+    CompletionProbe::StoreMem,
+    5
+);
+instruction_latency_validation!(
+    fatptr_add_completes_at_wb_cycle_5,
     "FatPtrADD",
     inst::FatPtrADD {
         frd: 4,
@@ -266,10 +264,10 @@ instruction_latency_validation!(
         imm_idx: 0
     },
     CompletionProbe::WriteBack,
-    6
+    5
 );
 instruction_latency_validation!(
-    fatptr_sub_completes_at_wb_cycle_6,
+    fatptr_sub_completes_at_wb_cycle_5,
     "FatPtrSUB",
     inst::FatPtrSUB {
         frd: 4,
@@ -278,7 +276,7 @@ instruction_latency_validation!(
         imm_idx: 0
     },
     CompletionProbe::WriteBack,
-    6
+    5
 );
 instruction_latency_validation!(
     jump_completes_at_id_cycle_2,
@@ -294,6 +292,53 @@ instruction_latency_validation!(
     CompletionProbe::EqualExitEx,
     3
 );
+
+#[test]
+fn agu_failure_is_reported_by_ex_without_an_ex_mem_result() {
+    let mut cpu = CPU::new_with_mem_stop_fsm(DeterministicMemStopFsm::new(1));
+    cpu.get_RF().write_fregs(1, fatptr_rf::new(15, 0));
+    cpu.get_imem().flash_in(&[inst::LD128 { rd: 4, frs: 1 }]);
+
+    cpu.tick();
+    cpu.tick();
+
+    let (ex_mem_next, signal, _) = cpu.eval_EX(&cpu.id_ex_rf);
+    assert!(!ex_mem_next.is_valid());
+    assert_eq!(signal.get_reason(), signal_reason::exception);
+    assert!(signal.get_issuer_stage() == CPU_stages::EX);
+}
+
+#[test]
+fn ex_agu_failure_drains_older_work_discards_younger_work_and_resumes() {
+    let mut cpu = CPU::new_with_mem_stop_fsm(DeterministicMemStopFsm::new(1));
+    cpu.get_RF().write_vregs(1, [2; 4]);
+    cpu.get_RF().write_vregs(2, [3; 4]);
+    cpu.get_RF().write_fregs(1, fatptr_rf::new(15, 0));
+    cpu.get_imem().flash_in(&[
+        inst::ADD128 {
+            rd: 4,
+            rs1: 1,
+            rs2: 2,
+        },
+        inst::LD128 { rd: 6, frs: 1 },
+        inst::ADD128 {
+            rd: 5,
+            rs1: 1,
+            rs2: 2,
+        },
+        inst::JUMP { inst_imm: 3 },
+    ]);
+
+    for _ in 0..24 {
+        cpu.tick();
+    }
+
+    assert_eq!(cpu.get_RF().read_vregs(4), [5; 4]);
+    assert_eq!(cpu.get_RF().read_vregs(5), [0; 4]);
+    assert_eq!(cpu.get_RF().read_vregs(6), [0; 4]);
+    assert!(cpu.validation_probe().jump_id_completions > 0);
+    assert!(!cpu.is_finished());
+}
 
 fn tick_and_record(cpu: &mut CPU, cycle: u64, mem_events: &mut Vec<u64>, wb_events: &mut Vec<u64>) {
     let before = cpu.validation_probe();
@@ -328,7 +373,7 @@ fn validate_pause_resume_case(
     let mut cycle = 0;
     let mut mem_events = Vec::new();
     let mut wb_events = Vec::new();
-    for _ in 0..5 {
+    for _ in 0..4 {
         cycle += 1;
         tick_and_record(&mut cpu, cycle, &mut mem_events, &mut wb_events);
     }
@@ -336,7 +381,7 @@ fn validate_pause_resume_case(
     let held_pc = cpu.get_RF().read_pc();
     cpu.signal_pause();
 
-    let expected_mem = 5 + memory_delay;
+    let expected_mem = 4 + memory_delay;
     let expected_pause_ready = expected_mem + 1 + pause_delay;
     let expected_load_wb = expected_pause_ready + resume_delay + 1;
     let expected_follower_wb = expected_load_wb + 2;

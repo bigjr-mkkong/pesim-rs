@@ -4,8 +4,7 @@ use crate::cpu::imem::IMEM;
 use crate::cpu::pimcpu_types::DMAop;
 use crate::cpu::pimcpu_types::{CPU_stages, arch_action, arch_dest};
 
-use crate::cpu::AGU::{AGU_MEM_rf, AGU_stop_FSM};
-use crate::cpu::EX::{EX_AGU_rf, EX_stop_FSM, RAW_resolution_FSM};
+use crate::cpu::EX::{EX_MEM_rf, EX_stop_FSM, ExceptionDrain_FSM, RAW_resolution_FSM};
 use crate::cpu::ID::{ID_EX_rf, ID_jump_FSM};
 use crate::cpu::IF::IF_ID_rf;
 use crate::cpu::MEM::{MEM_WB_RF, MEM_stop_FSM};
@@ -33,8 +32,7 @@ pub struct CPU {
 
     pub(crate) if_id_rf: IF_ID_rf,
     pub(crate) id_ex_rf: ID_EX_rf,
-    pub(crate) ex_agu_rf: EX_AGU_rf,
-    pub(crate) agu_mem_rf: AGU_MEM_rf,
+    pub(crate) ex_mem_rf: EX_MEM_rf,
     pub(crate) mem_wb_rf: MEM_WB_RF,
     pub(crate) wb_forward_rf: MEM_WB_RF,
     pub(crate) pipeline_ctrl: sig_resolver,
@@ -59,7 +57,10 @@ impl CPU {
         let mut pipeline_ctrl = sig_resolver::new();
         pipeline_ctrl.add_new_fsm(signal_reason::jump_resolution, Box::new(ID_jump_FSM::new()));
         pipeline_ctrl.add_new_fsm(signal_reason::prog_end, Box::new(EX_stop_FSM::new()));
-        pipeline_ctrl.add_new_fsm(signal_reason::exception, Box::new(AGU_stop_FSM::new()));
+        pipeline_ctrl.add_new_fsm(
+            signal_reason::exception,
+            Box::new(ExceptionDrain_FSM::new()),
+        );
         pipeline_ctrl.add_new_fsm(signal_reason::mem_block_kind(), Box::new(mem_stop_fsm));
         pipeline_ctrl.add_new_fsm(
             signal_reason::external_pause,
@@ -75,8 +76,7 @@ impl CPU {
             RF: arch_rf::new(),
             if_id_rf: IF_ID_rf::new(),
             id_ex_rf: ID_EX_rf::new(),
-            ex_agu_rf: EX_AGU_rf::new(),
-            agu_mem_rf: AGU_MEM_rf::new(),
+            ex_mem_rf: EX_MEM_rf::new(),
             mem_wb_rf: MEM_WB_RF::new(),
             wb_forward_rf: MEM_WB_RF::new(),
             pipeline_ctrl,
@@ -262,15 +262,10 @@ impl CPU {
         let (_, wb_sigreq, wb_archop) = self.eval_WB(&self.mem_wb_rf);
         self.pipeline_ctrl.submit_signal(Some(wb_sigreq));
 
-        let (mem_wb_next, mem_sigreq, mem_archop) = self.eval_MEM(&self.agu_mem_rf, &self.fmem);
+        let (mem_wb_next, mem_sigreq, mem_archop) = self.eval_MEM(&self.ex_mem_rf, &self.fmem);
         self.pipeline_ctrl.submit_signal(Some(mem_sigreq));
 
-        let (agu_mem_next, agu_sigreq, agu_archop) = self.eval_AGU(&self.ex_agu_rf, &self.agu);
-        let (agu_sigreq, agu_archop) =
-            self.check_ext_pause(agu_sigreq, agu_archop, CPU_stages::AGU);
-        self.pipeline_ctrl.submit_signal(Some(agu_sigreq));
-
-        let (ex_agu_next, ex_sigreq, ex_archop) = self.eval_EX(&self.id_ex_rf);
+        let (ex_mem_next, ex_sigreq, ex_archop) = self.eval_EX(&self.id_ex_rf);
         let (ex_sigreq, ex_archop) = self.check_ext_pause(ex_sigreq, ex_archop, CPU_stages::EX);
         self.pipeline_ctrl.submit_signal(Some(ex_sigreq));
 
@@ -314,10 +309,9 @@ impl CPU {
             {
                 self.validation_probe.equal_exit_ex_completions += 1;
             }
-            if self.agu_mem_rf.is_valid()
-                && stage_action(CPU_stages::MEM) == pipeline_action::Normal
+            if self.ex_mem_rf.is_valid() && stage_action(CPU_stages::MEM) == pipeline_action::Normal
             {
-                let dma_op = self.agu_mem_rf.get_dma_op();
+                let dma_op = self.ex_mem_rf.get_dma_op();
                 if !matches!(dma_op, DMAop::NOP) {
                     self.validation_probe.mem_completions += 1;
                 }
@@ -340,7 +334,6 @@ impl CPU {
 
         collect_stage_ops(CPU_stages::WB, wb_archop);
         collect_stage_ops(CPU_stages::MEM, mem_archop);
-        collect_stage_ops(CPU_stages::AGU, agu_archop);
         collect_stage_ops(CPU_stages::EX, ex_archop);
         collect_stage_ops(CPU_stages::ID, id_archop);
         collect_stage_ops(CPU_stages::IF, if_archop);
@@ -399,9 +392,9 @@ impl CPU {
             }
         }
 
-        match stage_op(stage_action(CPU_stages::AGU), stage_action(CPU_stages::MEM)) {
+        match stage_op(stage_action(CPU_stages::EX), stage_action(CPU_stages::MEM)) {
             pipeline_action::Normal => {
-                self.agu_mem_rf = agu_mem_next;
+                self.ex_mem_rf = ex_mem_next;
                 #[cfg(test)]
                 {
                     self.validation_probe.latch_updates += 1;
@@ -409,25 +402,7 @@ impl CPU {
             }
             pipeline_action::Stall => {}
             pipeline_action::Flush | pipeline_action::END => {
-                self.agu_mem_rf.invalidate();
-                #[cfg(test)]
-                {
-                    self.validation_probe.latch_updates += 1;
-                }
-            }
-        }
-
-        match stage_op(stage_action(CPU_stages::EX), stage_action(CPU_stages::AGU)) {
-            pipeline_action::Normal => {
-                self.ex_agu_rf = ex_agu_next;
-                #[cfg(test)]
-                {
-                    self.validation_probe.latch_updates += 1;
-                }
-            }
-            pipeline_action::Stall => {}
-            pipeline_action::Flush | pipeline_action::END => {
-                self.ex_agu_rf.invalidate();
+                self.ex_mem_rf.invalidate();
                 #[cfg(test)]
                 {
                     self.validation_probe.latch_updates += 1;
@@ -471,11 +446,7 @@ impl CPU {
             }
         }
 
-        if self.prog_end_seen
-            && !self.ex_agu_rf.is_valid()
-            && !self.agu_mem_rf.is_valid()
-            && !self.mem_wb_rf.is_valid()
-        {
+        if self.prog_end_seen && !self.ex_mem_rf.is_valid() && !self.mem_wb_rf.is_valid() {
             self.finished = true;
         }
     }

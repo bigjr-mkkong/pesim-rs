@@ -1,4 +1,4 @@
-use crate::cpu::AGU::AGU_MEM_rf;
+use crate::cpu::EX::EX_MEM_rf;
 use crate::cpu::pimcpu_types::{CPU_stages, DMAop, WBop, arch_action, fatptr_rf};
 use crate::cpu::pipeline::CPU;
 use crate::cpu::signal_scoreboard::{SigFSM, pipeline_action, signal_reason, signal_req};
@@ -52,10 +52,10 @@ impl MEM_WB_RF {
 impl CPU {
     pub fn eval_MEM(
         &self,
-        agu_mem_rf: &AGU_MEM_rf,
+        ex_mem_rf: &EX_MEM_rf,
         fmem: &cpu_flat_mem,
     ) -> (MEM_WB_RF, signal_req, Vec<arch_action>) {
-        if !agu_mem_rf.is_valid() {
+        if !ex_mem_rf.is_valid() {
             (
                 MEM_WB_RF {
                     valid: false,
@@ -67,25 +67,25 @@ impl CPU {
                 [arch_action::DoNothing].to_vec(),
             )
         } else {
-            match agu_mem_rf.get_dma_op() {
+            match ex_mem_rf.get_dma_op() {
                 DMAop::NOP => (
                     MEM_WB_RF {
                         valid: true,
-                        arith_result: agu_mem_rf.get_arith_result(),
-                        ptr_result: agu_mem_rf.get_ptr_result(),
-                        wb_op: agu_mem_rf.get_wb_op(),
+                        arith_result: ex_mem_rf.get_arith_result(),
+                        ptr_result: ex_mem_rf.get_ptr_result(),
+                        wb_op: ex_mem_rf.get_wb_op(),
                     },
                     signal_req::new(signal_reason::no_reason, CPU_stages::MEM, None),
                     [arch_action::DoNothing].to_vec(),
                 ),
                 DMAop::READ_VEC { .. } => {
-                    if let Some(paddr) = agu_mem_rf.get_phys_addr() {
+                    if let Some(paddr) = ex_mem_rf.get_phys_addr() {
                         (
                             MEM_WB_RF {
                                 valid: true,
                                 arith_result: fmem.mem_read_data(paddr),
                                 ptr_result: None,
-                                wb_op: agu_mem_rf.get_wb_op(),
+                                wb_op: ex_mem_rf.get_wb_op(),
                             },
                             signal_req::new(
                                 signal_reason::MEM_block {
@@ -97,7 +97,6 @@ impl CPU {
                                     CPU_stages::IF,
                                     CPU_stages::ID,
                                     CPU_stages::EX,
-                                    CPU_stages::AGU,
                                     CPU_stages::MEM,
                                     CPU_stages::WB,
                                 ])),
@@ -118,7 +117,7 @@ impl CPU {
                     }
                 }
                 DMAop::WRITE_VEC { data_lit, .. } => {
-                    if let Some(paddr) = agu_mem_rf.get_phys_addr() {
+                    if let Some(paddr) = ex_mem_rf.get_phys_addr() {
                         (
                             MEM_WB_RF {
                                 valid: true,
@@ -136,7 +135,6 @@ impl CPU {
                                     CPU_stages::IF,
                                     CPU_stages::ID,
                                     CPU_stages::EX,
-                                    CPU_stages::AGU,
                                     CPU_stages::MEM,
                                     CPU_stages::WB,
                                 ])),
@@ -161,13 +159,13 @@ impl CPU {
                     }
                 }
                 DMAop::READ_FPTR { .. } => {
-                    if let Some(paddr) = agu_mem_rf.get_phys_addr() {
+                    if let Some(paddr) = ex_mem_rf.get_phys_addr() {
                         (
                             MEM_WB_RF {
                                 valid: true,
                                 arith_result: None,
                                 ptr_result: fmem.mem_read_fptr(paddr),
-                                wb_op: agu_mem_rf.get_wb_op(),
+                                wb_op: ex_mem_rf.get_wb_op(),
                             },
                             signal_req::new(
                                 signal_reason::MEM_block {
@@ -179,7 +177,6 @@ impl CPU {
                                     CPU_stages::IF,
                                     CPU_stages::ID,
                                     CPU_stages::EX,
-                                    CPU_stages::AGU,
                                     CPU_stages::MEM,
                                     CPU_stages::WB,
                                 ])),
@@ -200,7 +197,7 @@ impl CPU {
                     }
                 }
                 DMAop::WRITE_FPTR { fptr_data_lit, .. } => {
-                    if let Some(paddr) = agu_mem_rf.get_phys_addr() {
+                    if let Some(paddr) = ex_mem_rf.get_phys_addr() {
                         (
                             MEM_WB_RF {
                                 valid: true,
@@ -218,7 +215,6 @@ impl CPU {
                                     CPU_stages::IF,
                                     CPU_stages::ID,
                                     CPU_stages::EX,
-                                    CPU_stages::AGU,
                                     CPU_stages::MEM,
                                     CPU_stages::WB,
                                 ])),
@@ -282,16 +278,15 @@ impl SigFSM for MEM_stop_FSM {
 
     fn get_ops(&self) -> HashMap<CPU_stages, pipeline_action> {
         let mut ops = HashMap::<CPU_stages, pipeline_action>::from([
-            (CPU_stages::IF, pipeline_action::Stall),  //stall ifid
-            (CPU_stages::ID, pipeline_action::Stall),  //stall idex
-            (CPU_stages::EX, pipeline_action::Stall),  //stall exagu
-            (CPU_stages::AGU, pipeline_action::Stall), //stall agumem
+            (CPU_stages::IF, pipeline_action::Stall), // stall IF/ID
+            (CPU_stages::ID, pipeline_action::Stall), // stall ID/EX
+            (CPU_stages::EX, pipeline_action::Stall), // stall EX/MEM
         ]);
 
         match self.state {
             MEM_stop_FSM_states::Submit | MEM_stop_FSM_states::Stall => {
                 // The memory transaction is still in flight, so MEM must keep
-                // holding AGU/MEM instead of producing a premature WB value.
+                // holding EX/MEM instead of producing a premature WB value.
                 ops.insert(CPU_stages::MEM, pipeline_action::Stall);
                 ops
             }
@@ -301,9 +296,9 @@ impl SigFSM for MEM_stop_FSM {
                 ops
             }
             MEM_stop_FSM_states::Release => {
-                // Keep the completed WB value stable while AGU/MEM advances
+                // Keep the completed WB value stable while EX/MEM advances
                 // once to clear its duplicate copy of the load. Otherwise EX
-                // sees the older AGU/MEM load first, reports RAW, and is then
+                // sees the older EX/MEM load first, reports RAW, and is then
                 // overwritten before it can consume wb_forward_rf.
                 HashMap::from([
                     (CPU_stages::IF, pipeline_action::Stall),

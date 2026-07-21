@@ -65,13 +65,13 @@ impl CPU {
         //     return Some(frs_lit);
         // }
 
-        if self.agu_mem_rf.is_valid() {
-            if let WBop::WB_FPTR { frd } = self.agu_mem_rf.get_wb_op() {
+        if self.ex_mem_rf.is_valid() {
+            if let WBop::WB_FPTR { frd } = self.ex_mem_rf.get_wb_op() {
                 if frd == frs {
-                    if matches!(self.agu_mem_rf.get_dma_op(), DMAop::READ_FPTR { .. }) {
+                    if matches!(self.ex_mem_rf.get_dma_op(), DMAop::READ_FPTR { .. }) {
                         return None;
                     }
-                    return self.agu_mem_rf.get_ptr_result();
+                    return self.ex_mem_rf.get_ptr_result();
                 }
             }
         }
@@ -103,13 +103,13 @@ impl CPU {
             return Some(rs1_lit);
         }
 
-        if self.agu_mem_rf.is_valid() {
-            if let WBop::WB_VEC { rd } = self.agu_mem_rf.get_wb_op() {
+        if self.ex_mem_rf.is_valid() {
+            if let WBop::WB_VEC { rd } = self.ex_mem_rf.get_wb_op() {
                 if rd == rs1 {
-                    if matches!(self.agu_mem_rf.get_dma_op(), DMAop::READ_VEC { .. }) {
+                    if matches!(self.ex_mem_rf.get_dma_op(), DMAop::READ_VEC { .. }) {
                         return None;
                     }
-                    return self.agu_mem_rf.get_arith_result();
+                    return self.ex_mem_rf.get_arith_result();
                 }
             }
         }
@@ -152,24 +152,13 @@ impl CPU {
             return Some(rs_lit);
         }
 
-        if self.ex_agu_rf.is_valid() {
-            if let WBop::WB_VEC { rd } = self.ex_agu_rf.get_wb_op() {
+        if self.ex_mem_rf.is_valid() {
+            if let WBop::WB_VEC { rd } = self.ex_mem_rf.get_wb_op() {
                 if rd == rs {
-                    if matches!(self.ex_agu_rf.get_dma_op(), DMAop::READ_VEC { .. }) {
+                    if matches!(self.ex_mem_rf.get_dma_op(), DMAop::READ_VEC { .. }) {
                         return None;
                     }
-                    return self.ex_agu_rf.get_arith_result();
-                }
-            }
-        }
-
-        if self.agu_mem_rf.is_valid() {
-            if let WBop::WB_VEC { rd } = self.agu_mem_rf.get_wb_op() {
-                if rd == rs {
-                    if matches!(self.agu_mem_rf.get_dma_op(), DMAop::READ_VEC { .. }) {
-                        return None;
-                    }
-                    return self.agu_mem_rf.get_arith_result();
+                    return self.ex_mem_rf.get_arith_result();
                 }
             }
         }

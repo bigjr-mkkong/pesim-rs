@@ -53,6 +53,8 @@ fptr:
 offset is in granularit of 128bits
 
 Pipeline:
-IF -> ID -> EX -> AGU -> MEM -> WB
+IF -> ID -> EX(+AGU) -> MEM -> WB
 
-AGU stand for Address Generation Unit
+AGU stands for Address Generation Unit. It remains a functional unit for
+fat-pointer arithmetic, bounds checking, and address translation, but it does
+not occupy a separate timing stage. AGU work and failures are evaluated in EX.

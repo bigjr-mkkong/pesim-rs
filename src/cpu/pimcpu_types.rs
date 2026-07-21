@@ -87,7 +87,6 @@ pub enum CPU_stages {
     IF,
     ID,
     EX,
-    AGU,
     MEM,
     WB,
 }
@@ -98,9 +97,8 @@ impl CPU_stages {
             CPU_stages::IF => 1,
             CPU_stages::ID => 2,
             CPU_stages::EX => 3,
-            CPU_stages::AGU => 4,
-            CPU_stages::MEM => 5,
-            CPU_stages::WB => 6,
+            CPU_stages::MEM => 4,
+            CPU_stages::WB => 5,
         }
     }
 }

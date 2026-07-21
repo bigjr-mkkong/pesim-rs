@@ -81,6 +81,11 @@ impl signal_req {
     pub fn get_reason(&self) -> signal_reason {
         self.sig_reason
     }
+
+    #[cfg(test)]
+    pub(crate) fn get_issuer_stage(&self) -> CPU_stages {
+        self.issuer_stage
+    }
 }
 
 pub trait SigFSM: SigFSMClone + Send {
@@ -197,7 +202,6 @@ impl sig_resolver {
             (CPU_stages::IF, pipeline_action::Normal),
             (CPU_stages::ID, pipeline_action::Normal),
             (CPU_stages::EX, pipeline_action::Normal),
-            (CPU_stages::AGU, pipeline_action::Normal),
             (CPU_stages::MEM, pipeline_action::Normal),
             (CPU_stages::WB, pipeline_action::Normal),
         ]);
@@ -302,7 +306,6 @@ impl SigFSM for ExternalPause_FSM {
         HashMap::from([
             (CPU_stages::ID, pipeline_action::Stall),
             (CPU_stages::EX, pipeline_action::Stall),
-            (CPU_stages::AGU, pipeline_action::Stall),
             (CPU_stages::MEM, pipeline_action::Stall),
             (CPU_stages::WB, pipeline_action::Stall),
         ])
