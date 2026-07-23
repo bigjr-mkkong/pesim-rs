@@ -333,7 +333,6 @@ impl CPU_boot_FSM {
     }
 }
 
-
 /*
  * FIXME
  * Move boot fsm testcase into boot_fsm_test.rs

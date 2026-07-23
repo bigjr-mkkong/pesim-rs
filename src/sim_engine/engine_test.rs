@@ -1,6 +1,6 @@
 use super::*;
-use crate::DSIM3_CFG_PATH;
 use crate::DSIM3_OUT_DIR;
+use crate::PIM_DSIM3_CFG_PATH;
 use crate::cpu::pimcpu_types::{fatptr_rf, inst};
 use crate::memory::dramsim3_wrapper::dramsim3_wrapper;
 use crate::memory::mem_portal::dram_req;
@@ -62,7 +62,7 @@ fn engine_runs_pim_load_through_mem_fsm_and_dram_portal() {
 #[test]
 fn dramsim3_wrapper_test() {
     let req = dram_req::new(0, true, true);
-    let mut dsim3 = dramsim3_wrapper::new(DSIM3_CFG_PATH, DSIM3_OUT_DIR, 0, 0, 0, 0);
+    let mut dsim3 = dramsim3_wrapper::new(PIM_DSIM3_CFG_PATH, DSIM3_OUT_DIR, 0, 0, 0, 0);
     dsim3.SetPimMode(true);
 
     if dsim3.WillAcceptTransaction(0, false) {
@@ -130,9 +130,9 @@ fn unconfigured_engine_rejects_tick() {
 }
 
 #[test]
-fn fgo_switch_delay_counts_complete_cycles_in_both_directions() {
+fn fgo_near_switch_delay_counts_complete_cycles_in_both_directions() {
     let mut engine = Engine::new_fgo();
-    engine.set_external_signal_delays(2, 3);
+    engine.set_near_switch_cycles_for_test(2);
     engine
         .set_scheduling_mode(EngineSchedulingMode::Host_FGO_share)
         .unwrap();
@@ -150,7 +150,7 @@ fn fgo_switch_delay_counts_complete_cycles_in_both_directions() {
 
     engine.switch(EngineMode::HOST);
     engine.mode = engine.next_mode;
-    for _ in 0..3 {
+    for _ in 0..2 {
         engine.schedule();
         engine.mode = engine.next_mode;
         assert_eq!(engine.mode, EngineMode::switch_delay);
@@ -158,6 +158,41 @@ fn fgo_switch_delay_counts_complete_cycles_in_both_directions() {
     engine.schedule();
     engine.mode = engine.next_mode;
     assert_eq!(engine.mode, EngineMode::PIM);
+}
+
+#[test]
+fn engine_uses_near_switch_latency_derived_from_pim_config() {
+    let engine = Engine::new_fgo();
+    assert_eq!(engine.near_switch_cycles, 18);
+}
+
+#[test]
+fn fgo_near_switch_latency_starts_after_pim_requests_drain() {
+    let mut engine = Engine::new_fgo();
+    engine.set_near_switch_cycles_for_test(3);
+    engine
+        .set_scheduling_mode(EngineSchedulingMode::Host_FGO_share)
+        .unwrap();
+    engine.dram_port.submit(dram_req::new(0, true, true));
+    engine.switch(EngineMode::PIM);
+    engine.mode = engine.next_mode;
+
+    let mut drained_tick = None;
+    let mut host_tick = None;
+    for tick in 1..10_000 {
+        engine.tick();
+        if drained_tick.is_none() && engine.dsim3.is_drained() {
+            drained_tick = Some(tick);
+        }
+        if engine.mode == EngineMode::HOST {
+            host_tick = Some(tick);
+            break;
+        }
+    }
+
+    let drained_tick = drained_tick.expect("PIM request should drain");
+    let host_tick = host_tick.expect("engine should finish switching to host");
+    assert_eq!(host_tick - drained_tick, 3);
 }
 
 #[test]

@@ -8,11 +8,18 @@ use std::path::PathBuf;
 use sim_engine::request_router::MEM_BEGIN;
 
 #[cfg(not(test))]
-pub const DSIM3_CFG_PATH: &str = "/gem5/ext/pesim/pesim-rs/cfg/DDR4_8Gb_x4_2400_pim.ini";
+pub const PIM_DSIM3_CFG_PATH: &str = "/gem5/ext/pesim/pesim-rs/cfg/DDR4_8Gb_x4_2400_pim.ini";
 
 #[cfg(test)]
-pub const DSIM3_CFG_PATH: &str =
+pub const PIM_DSIM3_CFG_PATH: &str =
     "/home/michael/Projects/pimtlb/gem5/ext/pesim/pesim-rs/cfg/DDR4_8Gb_x4_2400_pim.ini";
+
+#[cfg(not(test))]
+pub const FALLBACK_DSIM3_CFG_PATH: &str = "/gem5/ext/pesim/pesim-rs/cfg/DDR4_8Gb_x4_2400.ini";
+
+#[cfg(test)]
+pub const FALLBACK_DSIM3_CFG_PATH: &str =
+    "/home/michael/Projects/pimtlb/gem5/ext/pesim/pesim-rs/cfg/DDR4_8Gb_x4_2400.ini";
 
 #[cfg(not(test))]
 pub const DSIM3_OUT_DIR: &str = "/gem5/ext/pesim/pesim-rs/output";
@@ -20,8 +27,8 @@ pub const DSIM3_OUT_DIR: &str = "/gem5/ext/pesim/pesim-rs/output";
 #[cfg(test)]
 pub const DSIM3_OUT_DIR: &str = "/home/michael/Projects/pimtlb/gem5/ext/pesim/pesim-rs/output";
 
-fn dsim3_paths() -> (PathBuf, PathBuf) {
-    let config_path = PathBuf::from(DSIM3_CFG_PATH);
+fn dsim3_paths(config: &str) -> (PathBuf, PathBuf) {
+    let config_path = PathBuf::from(config);
     let out_dir = PathBuf::from(DSIM3_OUT_DIR);
 
     if !config_path.is_file() {

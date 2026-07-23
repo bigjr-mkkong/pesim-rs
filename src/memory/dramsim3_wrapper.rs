@@ -269,6 +269,10 @@ impl dramsim3_wrapper {
         dramsim3_ext::GetQueueSize(self.ms.pin_mut())
     }
 
+    pub fn get_near_switch_latency(&mut self) -> i32 {
+        dramsim3_ext::GetNearSwitchLatency(self.ms.pin_mut())
+    }
+
     pub fn get_channels(&mut self) -> u64 {
         dramsim3_ext::GetChannels(self.ms.pin_mut())
     }

@@ -1,7 +1,6 @@
 use crate::CPU;
 use crate::PE::pe_top::PE;
 use crate::cpu::boot_fsm::CPU_boot_FSM;
-use crate::dsim3_paths;
 use crate::memory::dramsim3_wrapper::dramsim3_wrapper;
 use crate::memory::flat_memory::PIM_ENTRIES_PER_CACHELINE;
 use crate::memory::mem_portal::{cacheline_payload, dram_portal, dram_req, portal_mode};
@@ -9,6 +8,7 @@ use crate::sim_engine::engine_alloc::{
     PSEUDO_BANK_CACHELINES, PSEUDO_BANK_ENTRIES, PSEUDO_BANKS_PER_LOGICAL_BANK,
 };
 use crate::sim_engine::request_router::{pim_cmd, validate_pim_cmd_access};
+use crate::{PIM_DSIM3_CFG_PATH, dsim3_paths};
 use std::collections::VecDeque;
 #[cfg(test)]
 use std::sync::atomic::{AtomicU8, Ordering};
@@ -27,6 +27,13 @@ enum EngineMode {
     PIM,
     HOST,
     switch_delay,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SwitchPhase {
+    Idle,
+    Draining,
+    NearRowSwitch,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -96,9 +103,9 @@ pub struct Engine {
     //Following are F3FS scheduler internal variables
     fgo_request_state: FGO_RequestState,
     fgo_next_service: EngineMode,
+    switch_phase: SwitchPhase,
     switch_delay_remaining: u64,
-    switch_pause_cycles: u64,
-    switch_resume_cycles: u64,
+    near_switch_cycles: u64,
     init_mirroring_enabled: bool,
     // Test-only pin-out. This field and all writes to it are absent from production builds.
     #[cfg(test)]
@@ -159,7 +166,7 @@ impl Engine {
         let cgo_boot = matches!(&processor, EngineProcessor::CGO(_))
             .then(|| CPU_boot_FSM::new(dram_port.clone(), ch, ra, bg, ba, pb));
 
-        let (cfg_path, out_dir) = dsim3_paths();
+        let (cfg_path, out_dir) = dsim3_paths(PIM_DSIM3_CFG_PATH);
         let mut dsim3 = dramsim3_wrapper::new_for_pseudo_bank(
             cfg_path,
             out_dir,
@@ -172,6 +179,8 @@ impl Engine {
             PSEUDO_BANK_CACHELINES,
         );
         dsim3.SetPimMode(true);
+        let near_switch_cycles = u64::try_from(dsim3.get_near_switch_latency())
+            .expect("near-row switch latency must be non-negative");
 
         Self {
             ch,
@@ -200,9 +209,9 @@ impl Engine {
             clock_cycle: 0,
             fgo_request_state: FGO_RequestState::Idle,
             fgo_next_service: EngineMode::PIM,
+            switch_phase: SwitchPhase::Idle,
             switch_delay_remaining: 0,
-            switch_pause_cycles: 0,
-            switch_resume_cycles: 0,
+            near_switch_cycles,
             init_mirroring_enabled: true,
             #[cfg(test)]
             scheduler_probe: AtomicU8::new(0),
@@ -267,11 +276,14 @@ impl Engine {
     }
 
     pub fn set_external_signal_delays(&mut self, pause_cycles: u64, resume_cycles: u64) {
-        self.switch_pause_cycles = pause_cycles;
-        self.switch_resume_cycles = resume_cycles;
         if let EngineProcessor::CGO(cpu) = &mut self.processor {
             cpu.set_external_signal_delays(pause_cycles, resume_cycles);
         }
+    }
+
+    #[cfg(test)]
+    fn set_near_switch_cycles_for_test(&mut self, cycles: u64) {
+        self.near_switch_cycles = cycles;
     }
 
     pub(crate) fn clock_cycle(&self) -> u64 {
@@ -300,7 +312,7 @@ impl Engine {
             .collect()
     }
 
-    fn switch_delay_done(&mut self) -> bool {
+    fn switch_drain_done(&mut self) -> bool {
         match self.last_service_mode {
             EngineMode::PIM => {
                 let processor_ready = match &self.processor {
@@ -308,14 +320,11 @@ impl Engine {
                     EngineProcessor::FGO(_) => true,
                 };
                 processor_ready
-                    && self.switch_delay_remaining == 0
                     && self.dram_port.req_drained_for_mode(portal_mode::PIM)
                     && self.dsim3.is_drained()
             }
             EngineMode::HOST => {
-                self.switch_delay_remaining == 0
-                    && self.dram_port.req_drained_for_mode(portal_mode::HOST)
-                    && self.dsim3.is_drained()
+                self.dram_port.req_drained_for_mode(portal_mode::HOST) && self.dsim3.is_drained()
             }
             EngineMode::switch_delay => false,
         }
@@ -330,29 +339,33 @@ impl Engine {
             EngineMode::PIM => {
                 self.next_mode = EngineMode::switch_delay;
                 self.last_service_mode = EngineMode::PIM;
-                self.switch_delay_remaining = match self.processor {
-                    EngineProcessor::FGO(_) => self.switch_pause_cycles,
-                    EngineProcessor::CGO(_) => 0,
-                };
+                self.switch_phase = SwitchPhase::Draining;
+                self.switch_delay_remaining = 0;
             }
             EngineMode::HOST => {
                 self.next_mode = EngineMode::switch_delay;
                 self.last_service_mode = EngineMode::HOST;
-                self.switch_delay_remaining = match self.processor {
-                    EngineProcessor::FGO(_) => self.switch_resume_cycles,
-                    EngineProcessor::CGO(_) => 0,
-                };
+                self.switch_phase = SwitchPhase::Draining;
+                self.switch_delay_remaining = 0;
             }
             EngineMode::switch_delay => {
+                if self.switch_phase == SwitchPhase::Draining {
+                    if !self.switch_drain_done() {
+                        self.next_mode = EngineMode::switch_delay;
+                        return;
+                    }
+                    self.switch_phase = SwitchPhase::NearRowSwitch;
+                    self.switch_delay_remaining = self.near_switch_cycles;
+                }
+
                 if self.switch_delay_remaining > 0 {
                     self.switch_delay_remaining -= 1;
                     self.next_mode = EngineMode::switch_delay;
                     return;
                 }
-                if !self.switch_delay_done() {
-                    self.next_mode = EngineMode::switch_delay;
-                    return;
-                }
+
+                assert_eq!(self.switch_phase, SwitchPhase::NearRowSwitch);
+                self.switch_phase = SwitchPhase::Idle;
 
                 // Keep last_service_mode as the last non-delay service mode until
                 // the next real mode requests a switch. switch_delay may last multiple cycles, so
@@ -379,6 +392,8 @@ impl Engine {
     fn force_pim_mode(&mut self) {
         self.mode = EngineMode::PIM;
         self.next_mode = EngineMode::PIM;
+        self.switch_phase = SwitchPhase::Idle;
+        self.switch_delay_remaining = 0;
         self.dram_port.set_mode(portal_mode::PIM);
         self.dsim3.SetPimMode(true);
     }
@@ -386,6 +401,8 @@ impl Engine {
     fn force_host_mode(&mut self) {
         self.mode = EngineMode::HOST;
         self.next_mode = EngineMode::HOST;
+        self.switch_phase = SwitchPhase::Idle;
+        self.switch_delay_remaining = 0;
         self.dram_port.set_mode(portal_mode::HOST);
         self.dsim3.SetPimMode(false);
     }

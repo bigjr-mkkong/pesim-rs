@@ -39,6 +39,7 @@ pub mod dramsim3_ffi {
         pub fn GetBusBits(self: Pin<&mut dramsim3_ext>) -> i32;
         pub fn GetBurstLength(self: Pin<&mut dramsim3_ext>) -> i32;
         pub fn GetQueueSize(self: Pin<&mut dramsim3_ext>) -> i32;
+        pub fn GetNearSwitchLatency(self: Pin<&mut dramsim3_ext>) -> i32;
         pub fn GetClock(self: Pin<&mut dramsim3_ext>) -> i32;
 
         pub fn GetPimMode(self: Pin<&mut dramsim3_ext>) -> bool;

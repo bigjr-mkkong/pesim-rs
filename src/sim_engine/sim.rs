@@ -41,7 +41,6 @@
  * done yet but it's all ready
  */
 
-use crate::dsim3_paths;
 use crate::memory::dramsim3_wrapper::dramsim3_wrapper;
 use crate::memory::mem_portal::{cacheline_payload, dram_req};
 use crate::sim_engine::engine::{Engine, EngineRequest, EngineSchedulingMode};
@@ -50,6 +49,7 @@ use crate::sim_engine::engine_alloc::{
 };
 use crate::sim_engine::request_router::{PIM_CMD_PAGE_BASE, decode_pim_cmd, pim_cmd};
 use crate::sim_engine::timing_harness::timing_harness;
+use crate::{FALLBACK_DSIM3_CFG_PATH, dsim3_paths};
 use rayon::ThreadPool;
 use rayon::ThreadPoolBuilder;
 use rayon::prelude::*;
@@ -108,7 +108,7 @@ pub struct Sim {
 
 impl Sim {
     pub fn new() -> Self {
-        let (cfg_path, out_dir) = dsim3_paths();
+        let (cfg_path, out_dir) = dsim3_paths(FALLBACK_DSIM3_CFG_PATH);
         let mut dsim3_inst = dramsim3_wrapper::new(cfg_path, out_dir, 0, 0, 0, 0);
         dsim3_inst.SetPimMode(false); //Set dsim3 as non-pim as it handle normal traces
         let allocator = engine_alloc::new(0..1, 0..1, 0..1, 1..3);

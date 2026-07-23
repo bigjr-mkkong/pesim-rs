@@ -1,5 +1,28 @@
 use super::*;
 
+fn ini_value<'a>(contents: &'a str, key: &str) -> Option<&'a str> {
+    contents.lines().find_map(|line| {
+        let (candidate, value) = line.split_once('=')?;
+        (candidate.trim() == key).then(|| value.trim())
+    })
+}
+
+#[test]
+fn fallback_and_pim_dramsim3_configs_are_distinct_and_address_compatible() {
+    assert_ne!(FALLBACK_DSIM3_CFG_PATH, PIM_DSIM3_CFG_PATH);
+
+    let fallback = std::fs::read_to_string(FALLBACK_DSIM3_CFG_PATH)
+        .expect("fallback DRAMSim3 configuration should be readable");
+    let pim = std::fs::read_to_string(PIM_DSIM3_CFG_PATH)
+        .expect("PIM DRAMSim3 configuration should be readable");
+
+    assert_eq!(
+        ini_value(&fallback, "address_mapping"),
+        ini_value(&pim, "address_mapping"),
+        "fallback and PIM timing models must decode the same physical addresses"
+    );
+}
+
 #[test]
 fn c_abi_drives_request_to_completion() {
     let sim = pesim_new();
