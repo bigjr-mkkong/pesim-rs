@@ -14,6 +14,7 @@ pub struct dramsim3_wrapper {
     pseudo_bank: Option<u64>,
     pim_bank_local_base: u64,
     pim_bank_local_size: Option<u64>,
+    host_addr_base: u64,
     /*
      * Unique request ID to track precise complete order for each request
      */
@@ -33,7 +34,30 @@ impl dramsim3_wrapper {
         bg_: u64,
         ba_: u64,
     ) -> Self {
-        Self::build(cfg_path, out_dir, ch_, ra_, bg_, ba_, None, 0, None)
+        Self::new_with_address_base(cfg_path, out_dir, ch_, ra_, bg_, ba_, 0)
+    }
+
+    pub fn new_with_address_base(
+        cfg_path: impl AsRef<Path>,
+        out_dir: impl AsRef<Path>,
+        ch_: u64,
+        ra_: u64,
+        bg_: u64,
+        ba_: u64,
+        host_addr_base: u64,
+    ) -> Self {
+        Self::build(
+            cfg_path,
+            out_dir,
+            ch_,
+            ra_,
+            bg_,
+            ba_,
+            None,
+            0,
+            None,
+            host_addr_base,
+        )
     }
 
     pub fn new_for_pseudo_bank(
@@ -46,6 +70,7 @@ impl dramsim3_wrapper {
         pseudo_bank: u64,
         pim_bank_local_base: u64,
         pim_bank_local_size: u64,
+        host_addr_base: u64,
     ) -> Self {
         Self::build(
             cfg_path,
@@ -57,6 +82,7 @@ impl dramsim3_wrapper {
             Some(pseudo_bank),
             pim_bank_local_base,
             Some(pim_bank_local_size),
+            host_addr_base,
         )
     }
 
@@ -70,6 +96,7 @@ impl dramsim3_wrapper {
         pseudo_bank: Option<u64>,
         pim_bank_local_base: u64,
         pim_bank_local_size: Option<u64>,
+        host_addr_base: u64,
     ) -> Self {
         let cfg_path = cfg_path
             .as_ref()
@@ -91,6 +118,7 @@ impl dramsim3_wrapper {
             pseudo_bank,
             pim_bank_local_base,
             pim_bank_local_size,
+            host_addr_base,
             req_id: 0,
         }
     }
@@ -103,7 +131,12 @@ impl dramsim3_wrapper {
 
     fn request_addr_to_dram_addr(&mut self, addr: u64, is_pim: bool) -> u64 {
         if !is_pim {
-            return addr;
+            return addr.checked_sub(self.host_addr_base).unwrap_or_else(|| {
+                panic!(
+                    "host address {addr:#x} is below controller base {:#x}",
+                    self.host_addr_base
+                )
+            });
         }
 
         let mut addr_bulk: local_addr_bulk = local_addr_bulk {
@@ -155,7 +188,13 @@ impl dramsim3_wrapper {
     }
 
     pub fn global_addr_to_local_components(&mut self, addr: u64) -> local_addr_bulk {
-        dramsim3_ext::GlobalToLocalAddr(self.ms.pin_mut(), addr)
+        let local = addr.checked_sub(self.host_addr_base).unwrap_or_else(|| {
+            panic!(
+                "host address {addr:#x} is below controller base {:#x}",
+                self.host_addr_base
+            )
+        });
+        dramsim3_ext::GlobalToLocalAddr(self.ms.pin_mut(), local)
     }
 
     pub fn exact_local_to_global_addr(
@@ -179,6 +218,8 @@ impl dramsim3_wrapper {
         };
 
         dramsim3_ext::ExactLocalToGlobalAddr(self.ms.pin_mut(), &local_addr)
+            .checked_add(self.host_addr_base)
+            .expect("controller-global address overflow")
     }
 
     fn push_pending(queue_map: &mut HashMap<u64, VecDeque<dram_req>>, addr: u64, req: dram_req) {
@@ -273,6 +314,14 @@ impl dramsim3_wrapper {
         dramsim3_ext::GetNearSwitchLatency(self.ms.pin_mut())
     }
 
+    pub fn get_pim_switch_enabled(&mut self) -> bool {
+        dramsim3_ext::GetPimSwitchEnabled(self.ms.pin_mut())
+    }
+
+    pub fn get_capacity_bytes(&mut self) -> u64 {
+        dramsim3_ext::GetCapacityBytes(self.ms.pin_mut())
+    }
+
     pub fn get_channels(&mut self) -> u64 {
         dramsim3_ext::GetChannels(self.ms.pin_mut())
     }
@@ -319,7 +368,8 @@ impl dramsim3_wrapper {
     }
 
     pub fn WillAcceptTransaction(&mut self, addr: u64, is_write: bool) -> bool {
-        dramsim3_ext::WillAcceptTransaction(self.ms.pin_mut(), addr, is_write)
+        let local = self.request_addr_to_dram_addr(addr, false);
+        dramsim3_ext::WillAcceptTransaction(self.ms.pin_mut(), local, is_write)
     }
 
     pub fn WillAcceptTransactionReq(&mut self, req: &dram_req) -> bool {

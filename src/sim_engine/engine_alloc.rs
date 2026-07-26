@@ -1,5 +1,4 @@
 use crate::sim_engine::sim::engine_cfg;
-use std::collections::HashMap;
 use std::ops::Range;
 
 pub const LOGICAL_BANK_SZ: u64 = 0x4000_0000;
@@ -20,19 +19,17 @@ enum EngineAllocKind {
 }
 
 #[derive(Clone, Copy)]
-struct pseudo_bank_location {
-    ch: u64,
-    ra: u64,
-    bg: u64,
-    ba: u64,
-    pb: u64,
+pub(crate) struct pseudo_bank_location {
+    pub(crate) ch: u64,
+    pub(crate) ra: u64,
+    pub(crate) bg: u64,
+    pub(crate) ba: u64,
+    pub(crate) pb: u64,
 }
 
 pub struct engine_alloc {
-    logical_banks: Vec<(u64, u64, u64, u64)>,
     pseudo_banks: Vec<pseudo_bank_location>,
     winner: Option<(u64, EngineAllocKind)>,
-    table: HashMap<(u64, EngineAllocKind), Vec<engine_cfg>>,
 }
 
 impl engine_alloc {
@@ -42,13 +39,11 @@ impl engine_alloc {
         bank_groups: Range<u64>,
         banks: Range<u64>,
     ) -> Self {
-        let mut logical_banks = Vec::new();
         let mut pseudo_banks = Vec::new();
         for ch in channels {
             for ra in ranks.clone() {
                 for bg in bank_groups.clone() {
                     for ba in banks.clone() {
-                        logical_banks.push((ch, ra, bg, ba));
                         for pb in 0..PSEUDO_BANKS_PER_LOGICAL_BANK {
                             pseudo_banks.push(pseudo_bank_location { ch, ra, bg, ba, pb });
                         }
@@ -58,10 +53,15 @@ impl engine_alloc {
         }
 
         Self {
-            logical_banks,
             pseudo_banks,
             winner: None,
-            table: HashMap::new(),
+        }
+    }
+
+    pub(crate) fn from_pseudo_banks(pseudo_banks: Vec<pseudo_bank_location>) -> Self {
+        Self {
+            pseudo_banks,
+            winner: None,
         }
     }
 
@@ -77,8 +77,9 @@ impl engine_alloc {
         })
     }
 
-    pub fn logical_banks(&self) -> Vec<(u64, u64, u64, u64)> {
-        self.logical_banks.clone()
+    #[cfg(test)]
+    pub(crate) fn configured_engine_count(&self) -> usize {
+        self.pseudo_banks.len()
     }
 
     fn alloc(
@@ -87,20 +88,10 @@ impl engine_alloc {
         kind: EngineAllocKind,
         make_cfg: impl Fn(u64, u64, u64, u64, u64) -> engine_cfg,
     ) -> Vec<engine_cfg> {
-        let key = (asid, kind);
-
-        if let Some(existing) = self.table.get(&key) {
-            return existing.clone();
+        if self.winner.is_some() {
+            return Vec::new();
         }
-
-        match self.winner {
-            Some(winner) if winner != key => {
-                self.table.insert(key, Vec::new());
-                return Vec::new();
-            }
-            None => self.winner = Some(key),
-            Some(_) => {}
-        }
+        self.winner = Some((asid, kind));
 
         let allocated = self
             .pseudo_banks
@@ -116,7 +107,6 @@ impl engine_alloc {
             })
             .collect::<Vec<_>>();
 
-        self.table.insert(key, allocated.clone());
         println!("Allocated {} of engines", allocated.len());
         allocated
     }
@@ -165,9 +155,6 @@ mod tests {
             PSEUDO_BANKS_PER_LOGICAL_BANK as usize
         );
         assert!(allocator.alloc_cgo(7).is_empty());
-        assert_eq!(
-            allocator.alloc_fgo(7).len(),
-            PSEUDO_BANKS_PER_LOGICAL_BANK as usize
-        );
+        assert!(allocator.alloc_fgo(7).is_empty());
     }
 }

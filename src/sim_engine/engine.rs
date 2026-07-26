@@ -8,8 +8,8 @@ use crate::sim_engine::engine_alloc::{
     PSEUDO_BANK_CACHELINES, PSEUDO_BANK_ENTRIES, PSEUDO_BANKS_PER_LOGICAL_BANK,
 };
 use crate::sim_engine::request_router::{pim_cmd, validate_pim_cmd_access};
-use crate::{PIM_DSIM3_CFG_PATH, dsim3_paths};
 use std::collections::VecDeque;
+use std::path::Path;
 #[cfg(test)]
 use std::sync::atomic::{AtomicU8, Ordering};
 
@@ -75,6 +75,7 @@ pub(crate) struct EngineRequest {
 // and then gives the other source priority.
 
 pub struct Engine {
+    controller_id: u32,
     ch: u64,
     ra: u64,
     bg: u64,
@@ -124,8 +125,28 @@ impl Engine {
     }
 
     pub(crate) fn new_cgo_at(ch: u64, ra: u64, bg: u64, ba: u64, pb: u64) -> Self {
+        let (cfg_path, out_dir) =
+            crate::dsim3_paths(crate::PIM_DSIM3_CFG_PATH, crate::DSIM3_OUT_DIR);
+        Self::new_cgo_configured(0, 0, cfg_path, out_dir, ch, ra, bg, ba, pb)
+    }
+
+    pub(crate) fn new_cgo_configured(
+        controller_id: u32,
+        controller_base: u64,
+        cfg_path: impl AsRef<Path>,
+        out_dir: impl AsRef<Path>,
+        ch: u64,
+        ra: u64,
+        bg: u64,
+        ba: u64,
+        pb: u64,
+    ) -> Self {
         Self::build(
             |dram_port| EngineProcessor::CGO(CPU::new_with_dram_port(dram_port)),
+            controller_id,
+            controller_base,
+            cfg_path,
+            out_dir,
             ch,
             ra,
             bg,
@@ -135,8 +156,28 @@ impl Engine {
     }
 
     pub(crate) fn new_fgo_at(ch: u64, ra: u64, bg: u64, ba: u64, pb: u64) -> Self {
+        let (cfg_path, out_dir) =
+            crate::dsim3_paths(crate::PIM_DSIM3_CFG_PATH, crate::DSIM3_OUT_DIR);
+        Self::new_fgo_configured(0, 0, cfg_path, out_dir, ch, ra, bg, ba, pb)
+    }
+
+    pub(crate) fn new_fgo_configured(
+        controller_id: u32,
+        controller_base: u64,
+        cfg_path: impl AsRef<Path>,
+        out_dir: impl AsRef<Path>,
+        ch: u64,
+        ra: u64,
+        bg: u64,
+        ba: u64,
+        pb: u64,
+    ) -> Self {
         Self::build(
             |dram_port| EngineProcessor::FGO(PE::new_with_dram_port(dram_port)),
+            controller_id,
+            controller_base,
+            cfg_path,
+            out_dir,
             ch,
             ra,
             bg,
@@ -147,6 +188,10 @@ impl Engine {
 
     fn build(
         make_processor: impl FnOnce(dram_portal) -> EngineProcessor,
+        controller_id: u32,
+        controller_base: u64,
+        cfg_path: impl AsRef<Path>,
+        out_dir: impl AsRef<Path>,
         ch: u64,
         ra: u64,
         bg: u64,
@@ -166,7 +211,6 @@ impl Engine {
         let cgo_boot = matches!(&processor, EngineProcessor::CGO(_))
             .then(|| CPU_boot_FSM::new(dram_port.clone(), ch, ra, bg, ba, pb));
 
-        let (cfg_path, out_dir) = dsim3_paths(PIM_DSIM3_CFG_PATH);
         let mut dsim3 = dramsim3_wrapper::new_for_pseudo_bank(
             cfg_path,
             out_dir,
@@ -177,12 +221,14 @@ impl Engine {
             pb,
             pseudo_bank_base_cacheline,
             PSEUDO_BANK_CACHELINES,
+            controller_base,
         );
         dsim3.SetPimMode(true);
         let near_switch_cycles = u64::try_from(dsim3.get_near_switch_latency())
             .expect("near-row switch latency must be non-negative");
 
         Self {
+            controller_id,
             ch,
             ra,
             bg,
@@ -360,6 +406,15 @@ impl Engine {
 
                 if self.switch_delay_remaining > 0 {
                     self.switch_delay_remaining -= 1;
+                    self.next_mode = EngineMode::switch_delay;
+                    return;
+                }
+
+                // Refresh or a late portal request can make the timing model
+                // busy again during the modeled near-row switching delay.
+                // Recheck at the exact mode-change boundary before asking
+                // DRAMSim3 to swap its saved CPU/PIM row context.
+                if !self.dsim3.is_drained() {
                     self.next_mode = EngineMode::switch_delay;
                     return;
                 }
@@ -708,8 +763,15 @@ impl Engine {
     #[cold]
     fn fatal_pim_oob(&self, operation: &str, addr: u64) -> ! {
         eprintln!(
-            "PIM_FATAL reason=address_out_of_bounds operation={operation} ch={} rank={} bank_group={} bank={} pseudo_bank={} address={} valid_entries=0..{}",
-            self.ch, self.ra, self.bg, self.ba, self.pseudo_bank, addr, PSEUDO_BANK_ENTRIES
+            "PIM_FATAL reason=address_out_of_bounds operation={operation} controller={} dram_channel={} rank={} bank_group={} bank={} pseudo_bank={} address={} valid_entries=0..{}",
+            self.controller_id,
+            self.ch,
+            self.ra,
+            self.bg,
+            self.ba,
+            self.pseudo_bank,
+            addr,
+            PSEUDO_BANK_ENTRIES
         );
 
         #[cfg(test)]
@@ -769,8 +831,13 @@ impl Engine {
                             .set_on();
                     if !accepted {
                         eprintln!(
-                            "PIM_ERROR reason=irregular_cgo_start ch={} rank={} bank_group={} bank={} pseudo_bank={}",
-                            self.ch, self.ra, self.bg, self.ba, self.pseudo_bank
+                            "PIM_ERROR reason=irregular_cgo_start controller={} dram_channel={} rank={} bank_group={} bank={} pseudo_bank={}",
+                            self.controller_id,
+                            self.ch,
+                            self.ra,
+                            self.bg,
+                            self.ba,
+                            self.pseudo_bank
                         );
                     }
                 }

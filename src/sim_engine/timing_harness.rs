@@ -35,14 +35,16 @@ pub(crate) struct CGO_harness_summary {
 }
 
 pub(crate) struct timing_harness {
+    controller_id: u32,
     FGO_states: HashMap<engine_cfg, FGO_harness_state>,
     CGO_states: HashMap<engine_cfg, CGO_harness_state>,
     completed_CGO: HashSet<engine_cfg>,
 }
 
 impl timing_harness {
-    pub fn new() -> Self {
+    pub fn new(controller_id: u32) -> Self {
         Self {
+            controller_id,
             FGO_states: HashMap::new(),
             CGO_states: HashMap::new(),
             completed_CGO: HashSet::new(),
@@ -58,7 +60,8 @@ impl timing_harness {
         self.CGO_states
             .insert(cfg, CGO_harness_state { start_cycle: cycle });
         println!(
-            "CGO_TRACE event=start ch={ch} rank={ra} bank_group={bg} bank={ba} pseudo_bank={pb} cycle={cycle} req_id={req_id}"
+            "CGO_TRACE event=start controller={} dram_channel={ch} rank={ra} bank_group={bg} bank={ba} pseudo_bank={pb} cycle={cycle} req_id={req_id}",
+            self.controller_id
         );
     }
 
@@ -82,6 +85,19 @@ impl timing_harness {
             .count() as u64;
         let result_passed =
             output_vector_count > 0 && output_vector_count == passing_output_vector_count;
+        if !result_passed {
+            let zero_output_indices = outputs
+                .iter()
+                .enumerate()
+                .filter_map(|(index, vector)| {
+                    vector.iter().all(|element| *element == 0).then_some(index)
+                })
+                .collect::<Vec<_>>();
+            eprintln!(
+                "PIM_ERROR reason=cgo_zero_output controller={} dram_channel={ch} rank={ra} bank_group={bg} bank={ba} pseudo_bank={pb} indices={zero_output_indices:?}",
+                self.controller_id
+            );
+        }
         let summary = CGO_harness_summary {
             start_cycle: state.start_cycle,
             end_cycle: cycle,
@@ -93,7 +109,8 @@ impl timing_harness {
         self.completed_CGO.insert(cfg);
 
         println!(
-            "CGO_TIMING ch={ch} rank={ra} bank_group={bg} bank={ba} pseudo_bank={pb} start_cycle={} end_cycle={} elapsed_cycles={} output_vectors={} passing_output_vectors={} result_status={}",
+            "CGO_TIMING controller={} dram_channel={ch} rank={ra} bank_group={bg} bank={ba} pseudo_bank={pb} start_cycle={} end_cycle={} elapsed_cycles={} output_vectors={} passing_output_vectors={} result_status={}",
+            self.controller_id,
             summary.start_cycle,
             summary.end_cycle,
             summary.elapsed_cycles,
@@ -123,7 +140,8 @@ impl timing_harness {
         });
 
         println!(
-            "FGO_TRACE event=receive ch={ch} rank={ra} bank_group={bg} bank={ba} pseudo_bank={pb} cycle={cycle} req_id={req_id} instruction={}",
+            "FGO_TRACE event=receive controller={} dram_channel={ch} rank={ra} bank_group={bg} bank={ba} pseudo_bank={pb} cycle={cycle} req_id={req_id} instruction={}",
+            self.controller_id,
             describe_FGO_instruction(instruction)
         );
     }
@@ -142,7 +160,8 @@ impl timing_harness {
             .unwrap_or(true);
         let state = self.FGO_states.entry(cfg).or_insert_with(|| {
             eprintln!(
-                "FGO_HARNESS_ERROR ch={ch} rank={ra} bank_group={bg} bank={ba} pseudo_bank={pb} result retired without a received command"
+                "FGO_HARNESS_ERROR controller={} dram_channel={ch} rank={ra} bank_group={bg} bank={ba} pseudo_bank={pb} result retired without a received command",
+                self.controller_id
             );
             FGO_harness_state {
                 start_cycle: cycle,
@@ -155,7 +174,8 @@ impl timing_harness {
         }
 
         println!(
-            "FGO_RESULT ch={ch} rank={ra} bank_group={bg} bank={ba} pseudo_bank={pb} cycle={cycle} req_id={req_id} addr={addr} output={output:?} all_zero={all_zero} status={}",
+            "FGO_RESULT controller={} dram_channel={ch} rank={ra} bank_group={bg} bank={ba} pseudo_bank={pb} cycle={cycle} req_id={req_id} addr={addr} output={output:?} all_zero={all_zero} status={}",
+            self.controller_id,
             if all_zero { "FAIL" } else { "PASS" }
         );
     }
@@ -169,7 +189,8 @@ impl timing_harness {
     ) -> Option<FGO_harness_summary> {
         let (ch, ra, bg, ba, pb) = FGO_coordinates(cfg);
         println!(
-            "FGO_TRACE event=retire ch={ch} rank={ra} bank_group={bg} bank={ba} pseudo_bank={pb} cycle={cycle} req_id={req_id} instruction={}",
+            "FGO_TRACE event=retire controller={} dram_channel={ch} rank={ra} bank_group={bg} bank={ba} pseudo_bank={pb} cycle={cycle} req_id={req_id} instruction={}",
+            self.controller_id,
             describe_FGO_instruction(instruction)
         );
 
@@ -179,7 +200,8 @@ impl timing_harness {
 
         let state = self.FGO_states.remove(&cfg).unwrap_or_else(|| {
             eprintln!(
-                "FGO_HARNESS_ERROR ch={ch} rank={ra} bank_group={bg} bank={ba} pseudo_bank={pb} NOP retired without a received command"
+                "FGO_HARNESS_ERROR controller={} dram_channel={ch} rank={ra} bank_group={bg} bank={ba} pseudo_bank={pb} NOP retired without a received command",
+                self.controller_id
             );
             FGO_harness_state {
                 start_cycle: cycle,
@@ -198,7 +220,8 @@ impl timing_harness {
         };
 
         println!(
-            "FGO_TIMING ch={ch} rank={ra} bank_group={bg} bank={ba} pseudo_bank={pb} start_cycle={} end_cycle={} elapsed_cycles={} vector_stores={} passing_vector_stores={} result_status={}",
+            "FGO_TIMING controller={} dram_channel={ch} rank={ra} bank_group={bg} bank={ba} pseudo_bank={pb} start_cycle={} end_cycle={} elapsed_cycles={} vector_stores={} passing_vector_stores={} result_status={}",
+            self.controller_id,
             summary.start_cycle,
             summary.end_cycle,
             summary.elapsed_cycles,
@@ -276,7 +299,7 @@ mod tests {
 
     #[test]
     fn CGO_summary_uses_first_start_and_counts_nonzero_outputs() {
-        let mut harness = timing_harness::new();
+        let mut harness = timing_harness::new(1);
         harness.log_CGO_start(CGO_CFG, 10, 1);
         harness.log_CGO_start(CGO_CFG, 20, 2);
 
@@ -301,7 +324,7 @@ mod tests {
 
     #[test]
     fn NOP_summary_includes_retirement_cycle_and_nonzero_result() {
-        let mut harness = timing_harness::new();
+        let mut harness = timing_harness::new(1);
         harness.log_FGO_receive(CFG, 10, 1, FGO_inst::LD128 { vRD: 0, addr: 0 });
         harness.log_FGO_receive(CFG, 11, 2, FGO_inst::ST128 { vRS: 0, addr: 2 });
         harness.log_FGO_result(CFG, 20, 2, 2, Some([1; 8]));
@@ -326,7 +349,7 @@ mod tests {
 
     #[test]
     fn all_zero_result_fails_the_NOP_summary() {
-        let mut harness = timing_harness::new();
+        let mut harness = timing_harness::new(1);
         harness.log_FGO_receive(CFG, 3, 1, FGO_inst::ST128 { vRS: 0, addr: 2 });
         harness.log_FGO_result(CFG, 8, 1, 2, Some([0; 8]));
 

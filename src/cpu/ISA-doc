@@ -33,6 +33,7 @@ Format:
 [OP] |[rs1]      |[rs2]       |        |      | //EqualExit
 
 inst        |   OP
+NOP         |   0000
 ADD128      |   0001
 SUB128      |   0010
 MUL128      |   0011
@@ -45,6 +46,11 @@ FatPtrAdd   |   1001
 FatPtrSub   |   1010
 Jump        |   1011
 EqualExit   |   1100
+
+Following three haven't being implemented yet, they are not available rn.
+MAX128      |   1101
+CMPLT128    |   1110
+POPCNT128   |   1111
 
 
 fptr:

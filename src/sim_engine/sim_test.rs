@@ -2,9 +2,12 @@ use crate::PE::types::inst as pe_inst;
 use crate::cpu::pimcpu_types::{fatptr_rf, inst};
 use crate::memory::mem_portal::dram_req;
 use crate::sim_engine::engine::{Engine, EngineSchedulingMode};
-use crate::sim_engine::request_router::{PIM_CMD_PAGE_BASE, PIM_CMD_SLOT_SIZE, pim_cmd};
+use crate::sim_engine::request_router::{
+    PIM_CMD_PAGE_BASE, PIM_CMD_REGION_SIZE, PIM_CMD_SLOT_SIZE, pim_cmd,
+};
 use crate::sim_engine::request_router_test::{encode_fgo_cmd, encode_pim_cmd};
-use crate::sim_engine::sim::{Sim, SimMode, engine_cfg};
+use crate::sim_engine::sim::{Sim, SimConfig, SimMode, engine_cfg};
+use std::path::PathBuf;
 
 impl Sim {
     fn set_mode_for_test(&mut self, sim_mode: SimMode) {
@@ -70,6 +73,46 @@ impl Sim {
 const MAX_ENQUEUE_TICKS: u64 = 10_000;
 const MAX_DRAIN_TICKS: u64 = 100_000;
 const PIM_PROGRAM_TICKS: u64 = 10_000;
+const GUEST_CONTROLLER_BASE: u64 = 0x2_8000_0000;
+const GUEST_CONTROLLER_SIZE: u64 = 8 * 1024 * 1024 * 1024;
+
+fn configured_sim(config_file: &str, pim_size: u64) -> Sim {
+    Sim::from_config(SimConfig {
+        config_file: PathBuf::from(config_file),
+        output_dir: PathBuf::from(crate::DSIM3_OUT_DIR),
+        controller_id: 1,
+        controller_base: GUEST_CONTROLLER_BASE,
+        controller_size: GUEST_CONTROLLER_SIZE,
+        pim_size,
+    })
+}
+
+#[test]
+fn dramsim3_configuration_controls_pim_capability_and_engine_count() {
+    let regular = configured_sim(crate::FALLBACK_DSIM3_CFG_PATH, 0);
+    assert_eq!(regular.configured_engine_count_for_test(), 0);
+
+    let smoke = configured_sim(crate::PIM_DSIM3_CFG_PATH, 2 * 1024 * 1024 * 1024);
+    assert_eq!(smoke.configured_engine_count_for_test(), 32);
+
+    let full = configured_sim(crate::PIM_DSIM3_CFG_PATH, 8128 * 1024 * 1024);
+    assert_eq!(full.configured_engine_count_for_test(), 127);
+}
+
+#[test]
+fn pim_off_treats_the_former_command_region_as_regular_dram() {
+    let mut sim = configured_sim(crate::FALLBACK_DSIM3_CFG_PATH, 0);
+    let command_base = GUEST_CONTROLLER_BASE + GUEST_CONTROLLER_SIZE - PIM_CMD_REGION_SIZE;
+    let payload = [0x114514; 8];
+
+    assert!(sim.canAccept(command_base, true));
+    sim.enqueue_with_data(command_base, payload, 8, true);
+    assert!(sim.engines.is_empty());
+
+    let completions = drain_until_completions(&mut sim, 1);
+    assert_eq!(completions[0].0.get_addr(), command_base);
+    assert!(sim.engines.is_empty());
+}
 
 fn enqueue_when_accepted(sim: &mut Sim, addr: u64, is_write: bool) {
     for _ in 0..MAX_ENQUEUE_TICKS {
@@ -253,6 +296,9 @@ fn find_addrs_by_engine_mapping(
                             0,
                             bank_local_addr,
                         );
+                        if !sim.contains_addr(addr) {
+                            continue;
+                        }
                         if sim.addr_maps_to_engine_for_test(addr) == should_map_to_engine {
                             addrs.push(addr);
                             if addrs.len() == count {
@@ -898,14 +944,14 @@ fn sim_handles_cgo_alloc_as_next_cycle_control_completion() {
         ch: 0,
         ra: 0,
         bg: 0,
-        ba: 1,
+        ba: 0,
         pb: 0,
     }));
     assert!(sim.engines.contains_key(&engine_cfg::CGO {
         ch: 0,
         ra: 0,
         bg: 0,
-        ba: 2,
+        ba: 1,
         pb: crate::sim_engine::engine_alloc::PSEUDO_BANKS_PER_LOGICAL_BANK - 1,
     }));
 }
@@ -988,14 +1034,14 @@ fn sim_alloc_winner_takes_all_and_second_asid_gets_empty_allocation() {
         ch: 0,
         ra: 0,
         bg: 0,
-        ba: 1,
+        ba: 0,
         pb: 0,
     }));
     assert!(sim.engines.contains_key(&engine_cfg::FGO {
         ch: 0,
         ra: 0,
         bg: 0,
-        ba: 2,
+        ba: 1,
         pb: crate::sim_engine::engine_alloc::PSEUDO_BANKS_PER_LOGICAL_BANK - 1,
     }));
 }

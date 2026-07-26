@@ -3,33 +3,27 @@
 #![allow(non_upper_case_globals)]
 
 use cpu::pipeline::CPU;
+use std::ffi::{CStr, c_char};
 use std::path::PathBuf;
-
-use sim_engine::request_router::MEM_BEGIN;
 
 #[cfg(not(test))]
 pub const PIM_DSIM3_CFG_PATH: &str = "/gem5/ext/pesim/pesim-rs/cfg/DDR4_8Gb_x4_2400_pim.ini";
-
 #[cfg(test)]
 pub const PIM_DSIM3_CFG_PATH: &str =
-    "/home/michael/Projects/pimtlb/gem5/ext/pesim/pesim-rs/cfg/DDR4_8Gb_x4_2400_pim.ini";
-
+    concat!(env!("CARGO_MANIFEST_DIR"), "/cfg/DDR4_8Gb_x4_2400_pim.ini");
 #[cfg(not(test))]
 pub const FALLBACK_DSIM3_CFG_PATH: &str = "/gem5/ext/pesim/pesim-rs/cfg/DDR4_8Gb_x4_2400.ini";
-
 #[cfg(test)]
 pub const FALLBACK_DSIM3_CFG_PATH: &str =
-    "/home/michael/Projects/pimtlb/gem5/ext/pesim/pesim-rs/cfg/DDR4_8Gb_x4_2400.ini";
-
+    concat!(env!("CARGO_MANIFEST_DIR"), "/cfg/DDR4_8Gb_x4_2400.ini");
 #[cfg(not(test))]
 pub const DSIM3_OUT_DIR: &str = "/gem5/ext/pesim/pesim-rs/output";
-
 #[cfg(test)]
-pub const DSIM3_OUT_DIR: &str = "/home/michael/Projects/pimtlb/gem5/ext/pesim/pesim-rs/output";
+pub const DSIM3_OUT_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/output");
 
-fn dsim3_paths(config: &str) -> (PathBuf, PathBuf) {
-    let config_path = PathBuf::from(config);
-    let out_dir = PathBuf::from(DSIM3_OUT_DIR);
+fn dsim3_paths(config: impl Into<PathBuf>, output: impl Into<PathBuf>) -> (PathBuf, PathBuf) {
+    let config_path = config.into();
+    let out_dir = output.into();
 
     if !config_path.is_file() {
         panic!("cannot find DSIM3 config file: {}", config_path.display());
@@ -76,9 +70,18 @@ typedef struct PESim_payload{
     uint32_t payload_sz_bytes;
 }PESim_payload;
 
+typedef struct PESim_config {
+    const char *config_file;
+    const char *output_dir;
+    uint32_t controller_id;
+    uint64_t controller_base;
+    uint64_t controller_size;
+    uint64_t pim_size;
+} PESim_config;
+
 typedef struct PESim_body PESim_body;
 
-PESim_body *pesim_new(void);
+PESim_body *pesim_new(const PESim_config *config);
 void pesim_free(PESim_body *sim);
 
 void pesim_print_stats(PESim_body *sim);
@@ -103,7 +106,7 @@ void pesim_tick(PESim_body *sim);
 
 */
 
-use crate::sim_engine::sim::Sim;
+use crate::sim_engine::sim::{Sim, SimConfig};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
 #[repr(C)]
@@ -121,6 +124,17 @@ pub struct PESim_payload {
     pub payload_sz_bytes: u32,
 }
 
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct PESim_config {
+    pub config_file: *const c_char,
+    pub output_dir: *const c_char,
+    pub controller_id: u32,
+    pub controller_base: u64,
+    pub controller_size: u64,
+    pub pim_size: u64,
+}
+
 pub struct PESim_body {
     sim: Sim,
     ticks: u64,
@@ -129,9 +143,9 @@ pub struct PESim_body {
 }
 
 impl PESim_body {
-    fn new() -> Self {
+    fn new(config: SimConfig) -> Self {
         Self {
-            sim: Sim::new(),
+            sim: Sim::from_config(config),
             ticks: 0,
             enqueued: 0,
             completions_returned: 0,
@@ -157,9 +171,35 @@ fn with_body_mut<T: Copy>(
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn pesim_new() -> *mut PESim_body {
+pub extern "C" fn pesim_new(config: *const PESim_config) -> *mut PESim_body {
     match catch_unwind(AssertUnwindSafe(|| {
-        Box::into_raw(Box::new(PESim_body::new()))
+        assert!(!config.is_null(), "PESim configuration pointer is null");
+        // SAFETY: The caller promises that `config` points to a live C
+        // configuration for the duration of this constructor call.
+        let config = unsafe { &*config };
+        assert!(
+            !config.config_file.is_null(),
+            "DRAMSim3 config path is null"
+        );
+        assert!(!config.output_dir.is_null(), "DRAMSim3 output path is null");
+        // SAFETY: Both pointers are required to reference NUL-terminated C
+        // strings. They are copied into owned PathBuf values immediately.
+        let config_file = unsafe { CStr::from_ptr(config.config_file) }
+            .to_str()
+            .expect("DRAMSim3 config path must be valid UTF-8");
+        let output_dir = unsafe { CStr::from_ptr(config.output_dir) }
+            .to_str()
+            .expect("DRAMSim3 output path must be valid UTF-8");
+        let (config_file, output_dir) = dsim3_paths(config_file, output_dir);
+        let sim_config = SimConfig {
+            config_file,
+            output_dir,
+            controller_id: config.controller_id,
+            controller_base: config.controller_base,
+            controller_size: config.controller_size,
+            pim_size: config.pim_size,
+        };
+        Box::into_raw(Box::new(PESim_body::new(sim_config)))
     })) {
         Ok(sim) => sim,
         Err(payload) => {
@@ -209,13 +249,7 @@ pub extern "C" fn pesim_reset_stats(sim: *mut PESim_body) {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn pesim_canAccept(sim: *mut PESim_body, addr: u64, is_write: bool) -> bool {
-    with_body_mut(sim, false, |body| {
-        assert!(
-            addr >= MEM_BEGIN,
-            "gem5 request address must be at or above MEM_BEGIN"
-        );
-        body.sim.canAccept(addr - MEM_BEGIN, is_write)
-    })
+    with_body_mut(sim, false, |body| body.sim.canAccept(addr, is_write))
 }
 
 #[unsafe(no_mangle)]
@@ -227,21 +261,15 @@ pub extern "C" fn pesim_enqueue_with_data(
 ) -> bool {
     with_body_mut(sim, false, |body| {
         assert!(
-            addr >= MEM_BEGIN,
-            "gem5 request address must be at or above MEM_BEGIN"
-        );
-        assert!(
             payload.payload_sz_bytes as usize <= std::mem::size_of_val(&payload.dword_payload),
             "PESim payload cannot exceed 64 bytes"
         );
-        let sim_addr = addr - MEM_BEGIN;
-
-        if !body.sim.canAccept(sim_addr, is_write) {
+        if !body.sim.canAccept(addr, is_write) {
             return false;
         }
 
         body.sim.enqueue_with_data(
-            sim_addr,
+            addr,
             payload.dword_payload,
             payload.payload_sz_bytes,
             is_write,
@@ -294,7 +322,7 @@ pub extern "C" fn pesim_get_complete(sim: *mut PESim_body) -> PEsim_rs_MemReq {
         // TODO: expose completion payload through the FFI result. OP_CGO_QUERY writes
         // its 0/1 result into dram_req.payload[0], but PEsim_rs_MemReq cannot return it yet.
         PEsim_rs_MemReq {
-            addr: req.get_addr() + MEM_BEGIN,
+            addr: req.get_addr(),
             issue_time: req.get_issue_time().unwrap_or(0),
             is_write: !req.is_read(),
         }

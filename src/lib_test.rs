@@ -1,4 +1,22 @@
 use super::*;
+use std::ffi::CString;
+
+const TEST_MEM_BEGIN: u64 = 0x8000_0000;
+const TEST_CONTROLLER_SIZE: u64 = 8 * 1024 * 1024 * 1024;
+
+fn new_test_sim() -> *mut PESim_body {
+    let config_file = CString::new(FALLBACK_DSIM3_CFG_PATH).unwrap();
+    let output_dir = CString::new(DSIM3_OUT_DIR).unwrap();
+    let config = PESim_config {
+        config_file: config_file.as_ptr(),
+        output_dir: output_dir.as_ptr(),
+        controller_id: 0,
+        controller_base: TEST_MEM_BEGIN,
+        controller_size: TEST_CONTROLLER_SIZE,
+        pim_size: 0,
+    };
+    pesim_new(&config)
+}
 
 fn ini_value<'a>(contents: &'a str, key: &str) -> Option<&'a str> {
     contents.lines().find_map(|line| {
@@ -25,13 +43,13 @@ fn fallback_and_pim_dramsim3_configs_are_distinct_and_address_compatible() {
 
 #[test]
 fn c_abi_drives_request_to_completion() {
-    let sim = pesim_new();
+    let sim = new_test_sim();
     assert!(!sim.is_null());
     assert!(pesim_clock_period(sim) > 0.0);
     assert!(pesim_queue_size(sim) > 0);
     assert!(pesim_burst_size(sim) > 0);
 
-    let addr = MEM_BEGIN + 0x100;
+    let addr = TEST_MEM_BEGIN + 0x100;
     let payload = PESim_payload {
         dword_payload: [0xdead_beef; 8],
         payload_sz_bytes: 64,
@@ -57,10 +75,10 @@ fn c_abi_drives_request_to_completion() {
 
 #[test]
 fn c_abi_round_trips_address_above_shifted_four_gib_range() {
-    let sim = pesim_new();
+    let sim = new_test_sim();
     assert!(!sim.is_null());
 
-    let addr = MEM_BEGIN + (1_u64 << 32) + 0x100;
+    let addr = TEST_MEM_BEGIN + (1_u64 << 32) + 0x100;
     let payload = PESim_payload {
         dword_payload: [0xdead_beef; 8],
         payload_sz_bytes: 4,

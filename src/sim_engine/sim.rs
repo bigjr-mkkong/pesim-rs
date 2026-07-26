@@ -45,15 +45,16 @@ use crate::memory::dramsim3_wrapper::dramsim3_wrapper;
 use crate::memory::mem_portal::{cacheline_payload, dram_req};
 use crate::sim_engine::engine::{Engine, EngineRequest, EngineSchedulingMode};
 use crate::sim_engine::engine_alloc::{
-    LOGICAL_BANK_SZ, PSEUDO_BANK_CACHELINES, PSEUDO_BANKS_PER_LOGICAL_BANK, engine_alloc,
+    PHY_BANK_SZ, PSEUDO_BANK_CACHELINES, PSEUDO_BANKS_PER_LOGICAL_BANK, engine_alloc,
+    pseudo_bank_location,
 };
-use crate::sim_engine::request_router::{PIM_CMD_PAGE_BASE, decode_pim_cmd, pim_cmd};
+use crate::sim_engine::request_router::{PIM_CMD_REGION_SIZE, decode_pim_cmd_in_region, pim_cmd};
 use crate::sim_engine::timing_harness::timing_harness;
-use crate::{FALLBACK_DSIM3_CFG_PATH, dsim3_paths};
 use rayon::ThreadPool;
 use rayon::ThreadPoolBuilder;
 use rayon::prelude::*;
 use std::collections::HashMap;
+use std::path::PathBuf;
 
 const PIM_CMD_PAYLOAD_SIZE_BYTES: u32 = std::mem::size_of::<u64>() as u32;
 
@@ -89,6 +90,15 @@ pub enum SimMode {
     Pim,
 }
 
+pub struct SimConfig {
+    pub config_file: PathBuf,
+    pub output_dir: PathBuf,
+    pub controller_id: u32,
+    pub controller_base: u64,
+    pub controller_size: u64,
+    pub pim_size: u64,
+}
+
 pub struct Sim {
     engines: HashMap<engine_cfg, Engine>,
     dsim3: dramsim3_wrapper,
@@ -104,15 +114,117 @@ pub struct Sim {
     cgo_alloc_scheduling_mode: EngineSchedulingMode,
     engine_tick_pool: Option<ThreadPool>,
     engine_tick_pool_threads: usize,
+    controller_id: u32,
+    controller_base: u64,
+    controller_size: u64,
+    command_base: u64,
+    command_end: u64,
+    config_file: PathBuf,
+    output_dir: PathBuf,
 }
 
 impl Sim {
+    #[cfg(test)]
     pub fn new() -> Self {
-        let (cfg_path, out_dir) = dsim3_paths(FALLBACK_DSIM3_CFG_PATH);
-        let mut dsim3_inst = dramsim3_wrapper::new(cfg_path, out_dir, 0, 0, 0, 0);
-        dsim3_inst.SetPimMode(false); //Set dsim3 as non-pim as it handle normal traces
-        let allocator = engine_alloc::new(0..1, 0..1, 0..1, 1..3);
-        Self::validate_pim_region(&mut dsim3_inst, &allocator);
+        let (config_file, output_dir) =
+            crate::dsim3_paths(crate::PIM_DSIM3_CFG_PATH, crate::DSIM3_OUT_DIR);
+        Self::from_config(SimConfig {
+            config_file,
+            output_dir,
+            controller_id: 1,
+            controller_base: 0,
+            controller_size: crate::sim_engine::request_router::DEFAULT_CONTROLLER_SIZE,
+            pim_size: 2 * 1024 * 1024 * 1024,
+        })
+    }
+
+    pub fn from_config(config: SimConfig) -> Self {
+        assert!(
+            config.controller_size > PIM_CMD_REGION_SIZE,
+            "controller must be larger than the command region"
+        );
+        let controller_end = config
+            .controller_base
+            .checked_add(config.controller_size)
+            .expect("controller address range overflow");
+        let command_base = controller_end - PIM_CMD_REGION_SIZE;
+        let command_end = controller_end - 1;
+
+        let mut dsim3_inst = dramsim3_wrapper::new_with_address_base(
+            &config.config_file,
+            &config.output_dir,
+            0,
+            0,
+            0,
+            0,
+            config.controller_base,
+        );
+        let modeled_capacity = dsim3_inst.get_capacity_bytes();
+        assert!(
+            modeled_capacity >= config.controller_size,
+            "DRAMSim3 capacity {modeled_capacity} is smaller than controller range {}",
+            config.controller_size
+        );
+        assert_eq!(
+            dsim3_inst.get_channels(),
+            1,
+            "each gem5 PESim controller must use a one-channel DRAMSim3 configuration"
+        );
+
+        let pim_enabled = dsim3_inst.get_pim_switch_enabled();
+        dsim3_inst.SetPimMode(false);
+
+        let allocator = if pim_enabled {
+            assert!(
+                config.pim_size > 0,
+                "PIM-enabled controller needs a nonzero PIM region"
+            );
+            assert_eq!(
+                config.pim_size % PHY_BANK_SZ,
+                0,
+                "PIM region must be 64 MiB engine aligned"
+            );
+            assert!(
+                config.pim_size <= config.controller_size - PHY_BANK_SZ,
+                "PIM region must exclude the command-containing final engine"
+            );
+            let mut locations = Vec::new();
+            let mut offset = 0;
+            while offset < config.pim_size {
+                let guest_addr = config
+                    .controller_base
+                    .checked_add(offset)
+                    .expect("PIM address overflow");
+                let decoded = dsim3_inst.global_addr_to_local_components(guest_addr);
+                let pb = decoded.bank_local_addr / PSEUDO_BANK_CACHELINES;
+                assert!(
+                    pb < PSEUDO_BANKS_PER_LOGICAL_BANK,
+                    "decoded pseudo-bank index is outside one logical bank"
+                );
+                let location = pseudo_bank_location {
+                    ch: decoded.channel,
+                    ra: decoded.rank,
+                    bg: decoded.bank_group,
+                    ba: decoded.bank,
+                    pb,
+                };
+                assert!(
+                    !locations.iter().any(|existing: &pseudo_bank_location| {
+                        existing.ch == location.ch
+                            && existing.ra == location.ra
+                            && existing.bg == location.bg
+                            && existing.ba == location.ba
+                            && existing.pb == location.pb
+                    }),
+                    "PIM prefix mapped two addresses to the same engine"
+                );
+                locations.push(location);
+                offset += PHY_BANK_SZ;
+            }
+            engine_alloc::from_pseudo_banks(locations)
+        } else {
+            engine_alloc::from_pseudo_banks(Vec::new())
+        };
 
         Self {
             engines: HashMap::new(),
@@ -122,12 +234,23 @@ impl Sim {
             immediate_complete_next: Vec::new(),
             immediate_complete_ready: Vec::new(),
             pending_pim_cmds: HashMap::new(),
-            harness: timing_harness::new(),
-            sim_mode: SimMode::Pim,
+            harness: timing_harness::new(config.controller_id),
+            sim_mode: if pim_enabled {
+                SimMode::Pim
+            } else {
+                SimMode::Host
+            },
             allocator,
             cgo_alloc_scheduling_mode: EngineSchedulingMode::Host_CGO_share,
             engine_tick_pool: None,
             engine_tick_pool_threads: 0,
+            controller_id: config.controller_id,
+            controller_base: config.controller_base,
+            controller_size: config.controller_size,
+            command_base,
+            command_end,
+            config_file: config.config_file,
+            output_dir: config.output_dir,
         }
     }
 
@@ -142,85 +265,31 @@ impl Sim {
             }
             std::collections::hash_map::Entry::Vacant(ent) => {
                 let engine = match cfg {
-                    engine_cfg::CGO { ch, ra, bg, ba, pb } => {
-                        Engine::new_cgo_at(ch, ra, bg, ba, pb)
-                    }
-                    engine_cfg::FGO { ch, ra, bg, ba, pb } => {
-                        Engine::new_fgo_at(ch, ra, bg, ba, pb)
-                    }
+                    engine_cfg::CGO { ch, ra, bg, ba, pb } => Engine::new_cgo_configured(
+                        self.controller_id,
+                        self.controller_base,
+                        &self.config_file,
+                        &self.output_dir,
+                        ch,
+                        ra,
+                        bg,
+                        ba,
+                        pb,
+                    ),
+                    engine_cfg::FGO { ch, ra, bg, ba, pb } => Engine::new_fgo_configured(
+                        self.controller_id,
+                        self.controller_base,
+                        &self.config_file,
+                        &self.output_dir,
+                        ch,
+                        ra,
+                        bg,
+                        ba,
+                        pb,
+                    ),
                 };
                 ent.insert(engine);
             }
-        }
-    }
-
-    fn validate_pim_region(dsim3: &mut dramsim3_wrapper, allocator: &engine_alloc) {
-        let logical_banks = allocator.logical_banks();
-        assert!(
-            !logical_banks.is_empty(),
-            "PIM logical-bank region is empty"
-        );
-
-        let channels = dsim3.get_channels();
-        let ranks = dsim3.get_ranks();
-        let bank_groups = dsim3.get_bankgroups_per_rank();
-        let banks_per_group = dsim3.get_banks_per_bg();
-        let command_bank = dsim3.global_addr_to_local_components(PIM_CMD_PAGE_BASE);
-        let mut bases = Vec::new();
-
-        for &(ch, ra, bg, ba) in &logical_banks {
-            assert!(
-                ch < channels,
-                "PIM region channel {ch} is outside DRAM geometry"
-            );
-            assert!(ra < ranks, "PIM region rank {ra} is outside DRAM geometry");
-            assert!(
-                bg < bank_groups,
-                "PIM region bank group {bg} is outside DRAM geometry"
-            );
-            assert!(
-                ba < banks_per_group,
-                "PIM region bank {ba} is outside DRAM geometry"
-            );
-            assert!(
-                (ch, ra, bg, ba)
-                    != (
-                        command_bank.channel,
-                        command_bank.rank,
-                        command_bank.bank_group,
-                        command_bank.bank,
-                    ),
-                "PIM region cannot include the logical bank containing the PIM command page"
-            );
-
-            let base = dsim3.exact_local_to_global_addr(ch, ra, bg, ba, 0, 0);
-            let last = base
-                .checked_add(LOGICAL_BANK_SZ - 64)
-                .expect("PIM logical-bank address range overflow");
-            let first_location = dsim3.global_addr_to_local_components(base);
-            let last_location = dsim3.global_addr_to_local_components(last);
-            for location in [first_location, last_location] {
-                assert_eq!(
-                    (
-                        location.channel,
-                        location.rank,
-                        location.bank_group,
-                        location.bank
-                    ),
-                    (ch, ra, bg, ba),
-                    "configured logical-bank range is not contiguous under the active address mapping"
-                );
-            }
-            bases.push(base);
-        }
-
-        bases.sort_unstable();
-        for pair in bases.windows(2) {
-            assert_eq!(
-                pair[1] - pair[0],
-                LOGICAL_BANK_SZ,
-                "configured PIM logical banks are not contiguous"
-            );
         }
     }
 
@@ -262,8 +331,31 @@ impl Sim {
         bus_bytes.saturating_mul(burst_length)
     }
 
+    fn contains_addr(&self, addr: u64) -> bool {
+        addr >= self.controller_base && addr - self.controller_base < self.controller_size
+    }
+
+    #[cfg(test)]
+    fn configured_engine_count_for_test(&self) -> usize {
+        self.allocator.configured_engine_count()
+    }
+
+    fn decode_cmd(
+        &self,
+        addr: u64,
+        payload: &cacheline_payload,
+    ) -> Result<Option<pim_cmd>, &'static str> {
+        if !matches!(self.sim_mode, SimMode::Pim) {
+            return Ok(None);
+        }
+        decode_pim_cmd_in_region(addr, payload, self.command_base, self.command_end)
+    }
+
     pub fn canAccept(&mut self, addr: u64, is_write: bool) -> bool {
-        let decoded_cmd = decode_pim_cmd(addr, &[0; 8]);
+        if !self.contains_addr(addr) {
+            return false;
+        }
+        let decoded_cmd = self.decode_cmd(addr, &[0; 8]);
         let request = EngineRequest {
             addr,
             is_write,
@@ -354,7 +446,12 @@ impl Sim {
         is_write: bool,
     ) {
         let req = dram_req::new_with_payload(addr, payload, !is_write, false);
-        let decoded_cmd = decode_pim_cmd(addr, &payload);
+        assert!(
+            self.contains_addr(addr),
+            "request address {addr:#x} is outside controller {} range",
+            self.controller_id
+        );
+        let decoded_cmd = self.decode_cmd(addr, &payload);
 
         if payload_sz_bytes != PIM_CMD_PAYLOAD_SIZE_BYTES && !matches!(decoded_cmd, Ok(None)) {
             self.enqueue_next_cycle_completion(req);
@@ -362,10 +459,6 @@ impl Sim {
         }
 
         match decoded_cmd {
-            Ok(Some(cmd)) if !matches!(self.sim_mode, SimMode::Pim) => {
-                eprintln!("warning: ignoring PIM command while Sim is in host mode");
-                self.enqueue_next_cycle_completion(req);
-            }
             Ok(Some(cmd)) if cmd.expects_write() != is_write => {
                 eprintln!("warning: ignoring PIM command with invalid access direction");
                 self.enqueue_next_cycle_completion(req);
@@ -460,6 +553,8 @@ impl Sim {
     }
 
     fn collect_engine_completion(&mut self) {
+        let command_base = self.command_base;
+        let command_end = self.command_end;
         for (cfg, engine) in self.engines.iter_mut() {
             if self.harness.is_tracking_CGO(*cfg) && engine.harness_CGO_finished() {
                 self.harness.log_CGO_finish(
@@ -470,7 +565,12 @@ impl Sim {
             }
 
             while let Some(req) = engine.get_host_complete() {
-                let cmd = match decode_pim_cmd(req.get_addr(), req.get_payload()) {
+                let cmd = match decode_pim_cmd_in_region(
+                    req.get_addr(),
+                    req.get_payload(),
+                    command_base,
+                    command_end,
+                ) {
                     Ok(Some(cmd @ (pim_cmd::FGO(_) | pim_cmd::CGO_Start | pim_cmd::CGO_Query))) => {
                         Some(cmd)
                     }

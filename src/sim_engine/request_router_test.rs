@@ -96,10 +96,7 @@ fn pe_request_uses_fixed_instruction_page() {
         decode_pim_cmd(PIM_CMD_PAGE_BASE + PIM_CMD_SLOT_SIZE * OP_ST32, &payload),
         Ok(Some(_))
     ));
-    assert!(matches!(
-        decode_pim_cmd(PIM_CMD_PAGE_BASE + 0x1000, &payload),
-        Ok(None)
-    ));
+    assert!(decode_pim_cmd(PIM_CMD_PAGE_BASE + 0x1000, &payload).is_err());
 }
 
 #[test]

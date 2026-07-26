@@ -16,14 +16,11 @@ impl pim_cmd {
     }
 }
 
-pub const MEM_BEGIN: u64 = 0x8000_0000;
-
-/*
- * This is vital bc gem5 generate address starts on 0x8000_0000, but simulator only accepts
- * 0x0-4Gib. In this case we need to manually cancel out the offset.
- */
-pub const PIM_CMD_PAGE_BASE: u64 = 0x1_7ffe_f000 - MEM_BEGIN;
-pub const PIM_CMD_PAGE_END: u64 = 0x1_7ffe_ffff - MEM_BEGIN;
+pub const PIM_CMD_REGION_SIZE: u64 = 512 * 1024;
+pub const DEFAULT_CONTROLLER_SIZE: u64 = 8 * 1024 * 1024 * 1024;
+// Unit tests use a controller whose guest-visible base is zero.
+pub const PIM_CMD_PAGE_BASE: u64 = DEFAULT_CONTROLLER_SIZE - PIM_CMD_REGION_SIZE;
+pub const PIM_CMD_PAGE_END: u64 = DEFAULT_CONTROLLER_SIZE - 1;
 pub const PIM_CMD_SLOT_SIZE: u64 = std::mem::size_of::<cacheline_payload>() as u64;
 
 const REG_A_SHIFT: u32 = 0;
@@ -51,19 +48,24 @@ const OP_CGO_QUERY: u64 = 11;
 const OP_CGO_ALLOC: u64 = 12;
 const OP_FGO_ALLOC: u64 = 13;
 
-fn is_pim_cmd_request(addr: u64) -> bool {
-    (PIM_CMD_PAGE_BASE..=PIM_CMD_PAGE_END).contains(&addr)
-}
-
 pub fn decode_pim_cmd(
     addr: u64,
     payload: &cacheline_payload,
 ) -> Result<Option<pim_cmd>, &'static str> {
-    if !is_pim_cmd_request(addr) {
+    decode_pim_cmd_in_region(addr, payload, PIM_CMD_PAGE_BASE, PIM_CMD_PAGE_END)
+}
+
+pub fn decode_pim_cmd_in_region(
+    addr: u64,
+    payload: &cacheline_payload,
+    command_base: u64,
+    command_end: u64,
+) -> Result<Option<pim_cmd>, &'static str> {
+    if !(command_base..=command_end).contains(&addr) {
         return Ok(None);
     }
 
-    let offset = addr - PIM_CMD_PAGE_BASE;
+    let offset = addr - command_base;
     if offset % PIM_CMD_SLOT_SIZE != 0 {
         return Err("PIM command address is not cacheline aligned");
     }
