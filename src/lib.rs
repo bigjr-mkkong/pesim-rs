@@ -11,6 +11,11 @@ pub const PIM_DSIM3_CFG_PATH: &str = "/gem5/ext/pesim/pesim-rs/cfg/DDR4_8Gb_x4_2
 #[cfg(test)]
 pub const PIM_DSIM3_CFG_PATH: &str =
     concat!(env!("CARGO_MANIFEST_DIR"), "/cfg/DDR4_8Gb_x4_2400_pim.ini");
+#[cfg(test)]
+pub const PIM_PRECACT_DSIM3_CFG_PATH: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/cfg/DDR4_8Gb_x4_2400_pim_prec_act.ini"
+);
 #[cfg(not(test))]
 pub const FALLBACK_DSIM3_CFG_PATH: &str = "/gem5/ext/pesim/pesim-rs/cfg/DDR4_8Gb_x4_2400.ini";
 #[cfg(test)]
@@ -62,7 +67,9 @@ typedef struct PEsim_rs_MemReq
 {
     uint64_t addr;
     uint64_t issue_time;
+    uint64_t payload_word0;
     bool is_write;
+    bool is_pim_query;
 }PEsim_rs_MemReq;
 
 typedef struct PESim_payload{
@@ -89,6 +96,8 @@ void pesim_reset_stats(PESim_body *sim);
 
 bool pesim_canAccept(PESim_body *sim, uint64_t addr, bool is_write);
 bool pesim_enqueue_with_data(PESim_body *sim, uint64_t addr, PESim_payload payload, bool is_write);
+bool pesim_can_accept_pim_cmd(PESim_body *sim, uint64_t offset, PESim_payload payload, bool is_write);
+bool pesim_enqueue_pim_cmd(PESim_body *sim, uint64_t offset, PESim_payload payload, bool is_write);
 
 double pesim_clock_period(PESim_body *sim);
 unsigned int pesim_queue_size(PESim_body *sim);
@@ -114,7 +123,9 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 pub struct PEsim_rs_MemReq {
     pub addr: u64,
     pub issue_time: u64,
+    pub payload_word0: u64,
     pub is_write: bool,
+    pub is_pim_query: bool,
 }
 
 #[repr(C)]
@@ -231,6 +242,7 @@ pub extern "C" fn pesim_free(sim: *mut PESim_body) {
 #[unsafe(no_mangle)]
 pub extern "C" fn pesim_print_stats(sim: *mut PESim_body) {
     with_body_mut(sim, (), |body| {
+        body.sim.print_cgo_switch_stats();
         println!(
             "PESim stats: ticks={}, enqueued={}, completions_returned={}",
             body.ticks, body.enqueued, body.completions_returned
@@ -292,6 +304,48 @@ pub extern "C" fn pesim_enqueue_with_data(
 }
 
 #[unsafe(no_mangle)]
+pub extern "C" fn pesim_can_accept_pim_cmd(
+    sim: *mut PESim_body,
+    offset: u64,
+    payload: PESim_payload,
+    is_write: bool,
+) -> bool {
+    with_body_mut(sim, false, |body| {
+        if payload.payload_sz_bytes as usize > std::mem::size_of_val(&payload.dword_payload) {
+            return false;
+        }
+        body.sim.canAcceptPimCmdAccess(
+            offset,
+            payload.dword_payload,
+            payload.payload_sz_bytes,
+            is_write,
+        )
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn pesim_enqueue_pim_cmd(
+    sim: *mut PESim_body,
+    offset: u64,
+    payload: PESim_payload,
+    is_write: bool,
+) -> bool {
+    with_body_mut(sim, false, |body| {
+        if payload.payload_sz_bytes as usize > std::mem::size_of_val(&payload.dword_payload) {
+            return false;
+        }
+        let accepted = body.sim.enqueuePimCmdAccess(
+            offset,
+            payload.dword_payload,
+            payload.payload_sz_bytes,
+            is_write,
+        );
+        body.enqueued += u64::from(accepted);
+        accepted
+    })
+}
+
+#[unsafe(no_mangle)]
 pub extern "C" fn pesim_clock_period(sim: *mut PESim_body) -> f64 {
     with_body_mut(sim, 0.0, |body| body.sim.clock_period())
 }
@@ -319,12 +373,13 @@ pub extern "C" fn pesim_get_complete(sim: *mut PESim_body) -> PEsim_rs_MemReq {
         };
 
         body.completions_returned += 1;
-        // TODO: expose completion payload through the FFI result. OP_CGO_QUERY writes
-        // its 0/1 result into dram_req.payload[0], but PEsim_rs_MemReq cannot return it yet.
         PEsim_rs_MemReq {
             addr: req.get_addr(),
             issue_time: req.get_issue_time().unwrap_or(0),
+            payload_word0: req.get_payload()[0],
             is_write: !req.is_read(),
+            is_pim_query: req.is_read()
+                && req.get_addr() == crate::sim_engine::request_router::PIM_QUERY_OFFSET,
         }
     })
 }

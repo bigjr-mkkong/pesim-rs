@@ -8,12 +8,18 @@ use crate::sim_engine::engine_alloc::{
     PSEUDO_BANK_CACHELINES, PSEUDO_BANK_ENTRIES, PSEUDO_BANKS_PER_LOGICAL_BANK,
 };
 use crate::sim_engine::request_router::{pim_cmd, validate_pim_cmd_access};
-use std::collections::VecDeque;
+use std::collections::{HashSet, VecDeque};
 use std::path::Path;
+use std::sync::OnceLock;
 #[cfg(test)]
 use std::sync::atomic::{AtomicU8, Ordering};
 
 const BATCH_SZ: u64 = 0;
+
+fn verbose_engine_trace() -> bool {
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    *ENABLED.get_or_init(|| std::env::var("PIM_VERBOSE_TRACE").as_deref() == Ok("1"))
+}
 
 #[cfg(test)]
 const SCHED_PROBE_INVOKED: u8 = 1 << 0;
@@ -32,8 +38,47 @@ enum EngineMode {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum SwitchPhase {
     Idle,
-    Draining,
+    SourceQuiescing,
+    MemoryPausing,
     NearRowSwitch,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct CgoSwitchDirectionStats {
+    pub requests: u64,
+    pub commits: u64,
+    pub cancellations: u64,
+    pub source_quiesce_cycles: u64,
+    pub promoted_drain_cycles: u64,
+    pub fixed_delay_cycles: u64,
+    pub commit_guard_cycles: u64,
+    pub parked_transactions_total: u64,
+    pub parked_transactions_max: u64,
+    pub promoted_transactions_total: u64,
+    pub promoted_transactions_max: u64,
+}
+
+impl CgoSwitchDirectionStats {
+    pub(crate) fn total_cycles(&self) -> u64 {
+        self.source_quiesce_cycles
+            + self.promoted_drain_cycles
+            + self.fixed_delay_cycles
+            + self.commit_guard_cycles
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct CgoSwitchStats {
+    pub pim_to_host: CgoSwitchDirectionStats,
+    pub host_to_pim: CgoSwitchDirectionStats,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CgoLifecycle {
+    Idle,
+    Booting,
+    Running,
+    Finished,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -43,6 +88,7 @@ pub enum EngineSchedulingMode {
     Host_CGO_share,
     Host_FGO_share,
     HostOnly,
+    Sequential,
 }
 
 enum EngineProcessor {
@@ -60,7 +106,6 @@ enum FGO_RequestState {
 #[derive(Clone, Copy)]
 enum CGO_Cmd {
     Start,
-    Query,
 }
 
 #[derive(Clone, Copy)]
@@ -101,13 +146,19 @@ pub struct Engine {
     MEM_req_watermarkL: u64,
     MEM_tick_rec: u64,
     first_host_switch_started: bool,
+    cgo_host_quantum_req_ids: HashSet<u64>,
+    cgo_switch_stats: CgoSwitchStats,
     //Following are F3FS scheduler internal variables
     fgo_request_state: FGO_RequestState,
     fgo_next_service: EngineMode,
+    fgo_commands_enqueued: u64,
+    fgo_commands_retired: u64,
+    fgo_barrier_sequence: Option<u64>,
     switch_phase: SwitchPhase,
     switch_delay_remaining: u64,
     near_switch_cycles: u64,
     init_mirroring_enabled: bool,
+    sequential_pim_requested: bool,
     // Test-only pin-out. This field and all writes to it are absent from production builds.
     #[cfg(test)]
     scheduler_probe: AtomicU8,
@@ -252,13 +303,19 @@ impl Engine {
             MEM_req_watermarkL: BATCH_SZ,
             MEM_tick_rec: 0,
             first_host_switch_started: false,
+            cgo_host_quantum_req_ids: HashSet::new(),
+            cgo_switch_stats: CgoSwitchStats::default(),
             clock_cycle: 0,
             fgo_request_state: FGO_RequestState::Idle,
             fgo_next_service: EngineMode::PIM,
+            fgo_commands_enqueued: 0,
+            fgo_commands_retired: 0,
+            fgo_barrier_sequence: None,
             switch_phase: SwitchPhase::Idle,
             switch_delay_remaining: 0,
             near_switch_cycles,
             init_mirroring_enabled: true,
+            sequential_pim_requested: false,
             #[cfg(test)]
             scheduler_probe: AtomicU8::new(0),
         }
@@ -290,13 +347,20 @@ impl Engine {
                     EngineSchedulingMode::Host_FGO_share
                 )
                 | (EngineProcessor::FGO(_), EngineSchedulingMode::HostOnly)
+                | (EngineProcessor::CGO(_), EngineSchedulingMode::Sequential)
+                | (EngineProcessor::FGO(_), EngineSchedulingMode::Sequential)
         );
         if !compatible {
             return Err("scheduling mode is incompatible with the engine processor");
         }
 
         self.scheduling_mode = scheduling_mode;
-        if scheduling_mode == EngineSchedulingMode::HostOnly {
+        if matches!(
+            scheduling_mode,
+            EngineSchedulingMode::HostOnly
+                | EngineSchedulingMode::Host_CGO_share
+                | EngineSchedulingMode::Sequential
+        ) {
             self.force_host_mode();
             self.first_host_switch_started = true;
         } else {
@@ -336,6 +400,11 @@ impl Engine {
         self.clock_cycle
     }
 
+    pub(crate) fn cgo_switch_stats(&self) -> Option<CgoSwitchStats> {
+        (self.scheduling_mode == EngineSchedulingMode::Host_CGO_share)
+            .then_some(self.cgo_switch_stats)
+    }
+
     pub(crate) fn harness_read_FGO_vector(&self, addr: u32) -> Option<[i16; 8]> {
         match &self.processor {
             EngineProcessor::FGO(pe) => pe.harness_read_vector(addr),
@@ -345,6 +414,16 @@ impl Engine {
 
     pub(crate) fn harness_CGO_finished(&self) -> bool {
         matches!(&self.processor, EngineProcessor::CGO(cpu) if cpu.is_finished())
+    }
+
+    pub(crate) fn reached_final_barrier(&self) -> bool {
+        match &self.processor {
+            EngineProcessor::CGO(cpu) => cpu.is_finished(),
+            EngineProcessor::FGO(_) => {
+                self.fgo_barrier_sequence == Some(self.fgo_commands_enqueued)
+                    && self.fgo_commands_retired >= self.fgo_commands_enqueued
+            }
+        }
     }
 
     pub(crate) fn harness_read_CGO_outputs(&self) -> Option<Vec<[u32; 4]>> {
@@ -362,7 +441,10 @@ impl Engine {
         match self.last_service_mode {
             EngineMode::PIM => {
                 let processor_ready = match &self.processor {
-                    EngineProcessor::CGO(cpu) => cpu.ready4signal(),
+                    // EqualExit halts the CGO pipeline permanently, so there
+                    // is no pause handshake left to acknowledge before host
+                    // traffic can reclaim the DRAM port.
+                    EngineProcessor::CGO(cpu) => cpu.is_finished() || cpu.ready4signal(),
                     EngineProcessor::FGO(_) => true,
                 };
                 processor_ready
@@ -381,21 +463,29 @@ impl Engine {
      * Host -> switch_delay(self-looping) -> PIM -> switch_delay(self-looping) -> Host
      */
     fn switch(&mut self, from: EngineMode) {
+        if self.scheduling_mode == EngineSchedulingMode::Host_CGO_share {
+            self.switch_cgo(from);
+        } else {
+            self.switch_legacy(from);
+        }
+    }
+
+    fn switch_legacy(&mut self, from: EngineMode) {
         match from {
             EngineMode::PIM => {
                 self.next_mode = EngineMode::switch_delay;
                 self.last_service_mode = EngineMode::PIM;
-                self.switch_phase = SwitchPhase::Draining;
+                self.switch_phase = SwitchPhase::SourceQuiescing;
                 self.switch_delay_remaining = 0;
             }
             EngineMode::HOST => {
                 self.next_mode = EngineMode::switch_delay;
                 self.last_service_mode = EngineMode::HOST;
-                self.switch_phase = SwitchPhase::Draining;
+                self.switch_phase = SwitchPhase::SourceQuiescing;
                 self.switch_delay_remaining = 0;
             }
             EngineMode::switch_delay => {
-                if self.switch_phase == SwitchPhase::Draining {
+                if self.switch_phase == SwitchPhase::SourceQuiescing {
                     if !self.switch_drain_done() {
                         self.next_mode = EngineMode::switch_delay;
                         return;
@@ -444,7 +534,118 @@ impl Engine {
             }
         }
     }
+
+    fn switch_cgo(&mut self, from: EngineMode) {
+        match from {
+            EngineMode::PIM | EngineMode::HOST => {
+                self.next_mode = EngineMode::switch_delay;
+                self.last_service_mode = from;
+                self.switch_phase = SwitchPhase::SourceQuiescing;
+                self.switch_delay_remaining = 0;
+                self.active_cgo_switch_stats_mut().requests += 1;
+            }
+            EngineMode::switch_delay => {
+                if self.switch_phase == SwitchPhase::SourceQuiescing {
+                    if !self.cgo_source_quiesced() {
+                        self.active_cgo_switch_stats_mut().source_quiesce_cycles += 1;
+                        self.next_mode = EngineMode::switch_delay;
+                        return;
+                    }
+
+                    self.dsim3.request_pause();
+                    let parked = self.dsim3.pause_parked_transactions();
+                    let promoted = self.dsim3.pause_promoted_transactions();
+                    let stats = self.active_cgo_switch_stats_mut();
+                    stats.parked_transactions_total += parked;
+                    stats.parked_transactions_max = stats.parked_transactions_max.max(parked);
+                    stats.promoted_transactions_total += promoted;
+                    stats.promoted_transactions_max = stats.promoted_transactions_max.max(promoted);
+                    self.switch_phase = SwitchPhase::MemoryPausing;
+                }
+
+                if self.switch_phase == SwitchPhase::MemoryPausing {
+                    if !self.dsim3.is_pause_ready() {
+                        self.active_cgo_switch_stats_mut().promoted_drain_cycles += 1;
+                        self.next_mode = EngineMode::switch_delay;
+                        return;
+                    }
+                    self.switch_phase = SwitchPhase::NearRowSwitch;
+                    self.switch_delay_remaining = self.near_switch_cycles;
+                }
+
+                if self.switch_delay_remaining > 0 {
+                    self.switch_delay_remaining -= 1;
+                    self.active_cgo_switch_stats_mut().fixed_delay_cycles += 1;
+                    self.next_mode = EngineMode::switch_delay;
+                    return;
+                }
+
+                if !self.dsim3.is_pause_ready() {
+                    self.active_cgo_switch_stats_mut().commit_guard_cycles += 1;
+                    self.next_mode = EngineMode::switch_delay;
+                    return;
+                }
+
+                assert_eq!(self.switch_phase, SwitchPhase::NearRowSwitch);
+                self.switch_phase = SwitchPhase::Idle;
+                self.active_cgo_switch_stats_mut().commits += 1;
+                match self.last_service_mode {
+                    EngineMode::PIM => {
+                        self.next_mode = EngineMode::HOST;
+                        self.dram_port.set_mode(portal_mode::HOST);
+                        self.dsim3.commit_paused_mode(false);
+                    }
+                    EngineMode::HOST => {
+                        self.next_mode = EngineMode::PIM;
+                        self.dram_port.set_mode(portal_mode::PIM);
+                        self.dsim3.commit_paused_mode(true);
+                    }
+                    EngineMode::switch_delay => unreachable!(),
+                }
+            }
+        }
+    }
+
+    fn cgo_source_quiesced(&mut self) -> bool {
+        match self.last_service_mode {
+            EngineMode::PIM => {
+                let EngineProcessor::CGO(cpu) = &self.processor else {
+                    unreachable!("CGO switch requires a CGO processor");
+                };
+                (cpu.is_finished() || cpu.ready4signal())
+                    && self.dram_port.req_drained_for_mode(portal_mode::PIM)
+            }
+            EngineMode::HOST => {
+                self.cgo_host_quantum_req_ids.is_empty()
+                    && self.dram_port.req_drained_for_mode(portal_mode::HOST)
+            }
+            EngineMode::switch_delay => false,
+        }
+    }
+
+    fn active_cgo_switch_stats_mut(&mut self) -> &mut CgoSwitchDirectionStats {
+        match self.last_service_mode {
+            EngineMode::PIM => &mut self.cgo_switch_stats.pim_to_host,
+            EngineMode::HOST => &mut self.cgo_switch_stats.host_to_pim,
+            EngineMode::switch_delay => {
+                unreachable!("switch delay cannot be an outgoing service mode")
+            }
+        }
+    }
+
+    fn cancel_cgo_switch(&mut self) {
+        if self.switch_phase == SwitchPhase::Idle {
+            return;
+        }
+        if self.dsim3.is_pause_requested() {
+            self.dsim3.cancel_pause();
+        }
+        self.active_cgo_switch_stats_mut().cancellations += 1;
+        self.switch_phase = SwitchPhase::Idle;
+        self.switch_delay_remaining = 0;
+    }
     fn force_pim_mode(&mut self) {
+        self.cancel_cgo_switch();
         self.mode = EngineMode::PIM;
         self.next_mode = EngineMode::PIM;
         self.switch_phase = SwitchPhase::Idle;
@@ -454,6 +655,7 @@ impl Engine {
     }
 
     fn force_host_mode(&mut self) {
+        self.cancel_cgo_switch();
         self.mode = EngineMode::HOST;
         self.next_mode = EngineMode::HOST;
         self.switch_phase = SwitchPhase::Idle;
@@ -486,6 +688,7 @@ impl Engine {
             }
             EngineSchedulingMode::Host_CGO_share => self.schedule_host_cgo_share(),
             EngineSchedulingMode::Host_FGO_share => self.schedule_host_fgo_share(),
+            EngineSchedulingMode::Sequential => self.schedule_sequential(),
         }
 
         #[cfg(test)]
@@ -506,6 +709,18 @@ impl Engine {
      * This implements a batch-based CFS for CGO and host
      */
     fn schedule_host_cgo_share(&mut self) {
+        match self.cgo_lifecycle() {
+            CgoLifecycle::Idle | CgoLifecycle::Finished => {
+                self.schedule_cgo_host_exclusive();
+                return;
+            }
+            CgoLifecycle::Booting => {
+                self.schedule_cgo_boot_exclusive();
+                return;
+            }
+            CgoLifecycle::Running => {}
+        }
+
         match self.mode {
             EngineMode::PIM => {
                 let should_switch_to_host = if self.first_host_switch_started {
@@ -545,7 +760,14 @@ impl Engine {
                         break;
                     }
                 }
-                for req in batch.into_iter().rev() {
+                for mut req in batch.into_iter().rev() {
+                    if req.get_id().is_none() {
+                        req.set_id(self.dsim3.get_req_id());
+                    }
+                    self.cgo_host_quantum_req_ids.insert(
+                        req.get_id()
+                            .expect("CGO host-quantum request must carry an ID"),
+                    );
                     self.dram_port.submit(req);
                 }
 
@@ -566,6 +788,61 @@ impl Engine {
         }
     }
 
+    fn cgo_lifecycle(&self) -> CgoLifecycle {
+        let EngineProcessor::CGO(cpu) = &self.processor else {
+            unreachable!("CGO lifecycle requires a CGO processor");
+        };
+
+        if cpu.is_finished() {
+            CgoLifecycle::Finished
+        } else if cpu.is_started() {
+            CgoLifecycle::Running
+        } else if self
+            .cgo_boot
+            .as_ref()
+            .expect("CGO engine must own a boot controller")
+            .is_idle()
+        {
+            CgoLifecycle::Idle
+        } else {
+            CgoLifecycle::Booting
+        }
+    }
+
+    fn submit_all_host_requests(&mut self) {
+        // The portal is stack-backed, so reverse submission preserves FIFO.
+        while let Some(req) = self.host_pool.pop_back() {
+            self.dram_port.submit(req);
+        }
+    }
+
+    fn schedule_cgo_host_exclusive(&mut self) {
+        match self.mode {
+            EngineMode::HOST => {
+                self.next_mode = EngineMode::HOST;
+                self.submit_all_host_requests();
+            }
+            EngineMode::PIM => self.switch(EngineMode::PIM),
+            EngineMode::switch_delay if self.last_service_mode == EngineMode::HOST => {
+                // CGO can reach EqualExit after resume but before a pending
+                // HOST->PIM handoff completes.  No PIM work remains, and the
+                // DRAM timing context has not changed yet, so cancel that
+                // unnecessary handoff and keep serving the host.
+                self.force_host_mode();
+                self.submit_all_host_requests();
+            }
+            EngineMode::switch_delay => self.switch(EngineMode::switch_delay),
+        }
+    }
+
+    fn schedule_cgo_boot_exclusive(&mut self) {
+        match self.mode {
+            EngineMode::PIM => self.next_mode = EngineMode::PIM,
+            EngineMode::HOST => self.switch(EngineMode::HOST),
+            EngineMode::switch_delay => self.switch(EngineMode::switch_delay),
+        }
+    }
+
     fn fgo_has_buffered_inst(&self) -> bool {
         match &self.processor {
             EngineProcessor::FGO(pe) => pe.has_buffered_inst(),
@@ -582,10 +859,17 @@ impl Engine {
     }
 
     fn fgo_pim_finished(&mut self) -> bool {
-        match &mut self.processor {
+        let finished = match &mut self.processor {
             EngineProcessor::FGO(pe) => pe.has_finished(),
             EngineProcessor::CGO(_) => unreachable!(),
+        };
+        if finished {
+            self.fgo_commands_retired = self
+                .fgo_commands_retired
+                .checked_add(1)
+                .expect("FGO retired-command counter overflow");
         }
+        finished
     }
 
     fn fgo_switch_to(&mut self, target: EngineMode) {
@@ -669,9 +953,79 @@ impl Engine {
         }
     }
 
+    /*
+     * Lock-free profiling baseline.  Host traffic drains in a host-only
+     * phase.  The first PIM command requests a direct, zero-delay handoff to
+     * PIM-only execution; no sharing scheduler or modeled switch delay is
+     * involved.  Post-measurement verification may hand back to host after
+     * the final PIM barrier.
+     */
+    fn schedule_sequential(&mut self) {
+        match self.mode {
+            EngineMode::HOST => {
+                while let Some(req) = self.host_pool.pop_back() {
+                    self.dram_port.submit(req);
+                }
+                if self.sequential_pim_requested
+                    && self.host_pool.is_empty()
+                    && self.dram_port.req_drained_for_mode(portal_mode::HOST)
+                    && self.dsim3.is_drained()
+                {
+                    self.force_pim_mode();
+                }
+            }
+            EngineMode::PIM => {
+                // The guest PIM submission thread can still miss in its
+                // instruction cache (notably in pseudo-bank 0).  This is
+                // orchestration traffic, not the finished CPU benchmark.
+                // Admit it directly to the same timing model without taking
+                // the host/PIM scheduler lock or changing row contexts.
+                self.issue_sequential_host_in_pim_phase();
+
+                if matches!(self.processor, EngineProcessor::FGO(_)) {
+                    if matches!(self.fgo_request_state, FGO_RequestState::PimInFlight)
+                        && self.fgo_pim_finished()
+                    {
+                        self.fgo_request_state = FGO_RequestState::Idle;
+                    }
+                    if matches!(self.fgo_request_state, FGO_RequestState::Idle)
+                        && self.fgo_has_buffered_inst()
+                    {
+                        self.fgo_issue_pim();
+                    }
+                }
+            }
+            EngineMode::switch_delay => {
+                panic!("sequential scheduling must never enter switch_delay")
+            }
+        }
+    }
+
+    fn issue_sequential_host_in_pim_phase(&mut self) {
+        // dram_portal is stack-backed, so reverse submission preserves FIFO.
+        while let Some(req) = self.host_pool.pop_back() {
+            if verbose_engine_trace() && self.pseudo_bank == 0 {
+                eprintln!(
+                    "SEQUENTIAL_TRACE event=portal-submit cycle={} addr={:#x}",
+                    self.clock_cycle,
+                    req.get_addr()
+                );
+            }
+            self.dram_port.submit_host_in_pim_phase(req);
+        }
+    }
+
     pub fn enqueue_host_mem_request(&mut self, req: dram_req) {
         if req.is_pim() {
             panic!("host memory request must be a non-PIM memory access");
+        }
+        if verbose_engine_trace() && self.pseudo_bank == 0 {
+            eprintln!(
+                "SEQUENTIAL_TRACE event=host-enqueue cycle={} mode={:?} addr={:#x}",
+                self.clock_cycle,
+                self.mode,
+                req.get_addr()
+            );
         }
         self.host_pool.push_back(req);
     }
@@ -716,7 +1070,7 @@ impl Engine {
 
     pub fn enqueue_host_pim_request(&mut self, req: dram_req, cmd: pim_cmd) {
         if req.is_pim() {
-            panic!("host PIM request must be a host request in the PIM command page");
+            panic!("host PIM command must use the host-command path");
         }
         validate_pim_cmd_access(cmd, !req.is_read())
             .unwrap_or_else(|err| panic!("cannot accept PIM command request: {err}"));
@@ -727,17 +1081,27 @@ impl Engine {
 
         match (&mut self.processor, cmd) {
             (EngineProcessor::FGO(pe), pim_cmd::FGO(instruction)) => {
+                if self.scheduling_mode == EngineSchedulingMode::Sequential {
+                    self.sequential_pim_requested = true;
+                }
                 self.init_mirroring_enabled = false;
+                self.fgo_commands_enqueued = self
+                    .fgo_commands_enqueued
+                    .checked_add(1)
+                    .expect("FGO enqueued-command counter overflow");
+                if matches!(instruction, crate::PE::types::inst::NOP) {
+                    self.fgo_barrier_sequence = Some(self.fgo_commands_enqueued);
+                }
                 pe.push_host_req(req, instruction)
             }
             (EngineProcessor::CGO(_), pim_cmd::CGO_Start) => {
+                if self.scheduling_mode == EngineSchedulingMode::Sequential {
+                    self.sequential_pim_requested = true;
+                }
                 if self.scheduling_mode != EngineSchedulingMode::HostOnly {
                     self.init_mirroring_enabled = false;
                 }
                 self.cgo_cmd_queue.push_back((CGO_Cmd::Start, req));
-            }
-            (EngineProcessor::CGO(_), pim_cmd::CGO_Query) => {
-                self.cgo_cmd_queue.push_back((CGO_Cmd::Query, req));
             }
             _ => unreachable!("PIM command compatibility was checked before enqueue"),
         }
@@ -799,10 +1163,7 @@ impl Engine {
         matches!(
             (&self.processor, cmd),
             (EngineProcessor::FGO(_), pim_cmd::FGO(_))
-                | (
-                    EngineProcessor::CGO(_),
-                    pim_cmd::CGO_Start | pim_cmd::CGO_Query
-                )
+                | (EngineProcessor::CGO(_), pim_cmd::CGO_Start)
         )
     }
 
@@ -812,6 +1173,7 @@ impl Engine {
             EngineSchedulingMode::Host_CGO_share
                 | EngineSchedulingMode::Host_FGO_share
                 | EngineSchedulingMode::HostOnly
+                | EngineSchedulingMode::Sequential
         )
     }
 
@@ -820,7 +1182,7 @@ impl Engine {
             return;
         }
 
-        while let Some((cmd, mut req)) = self.cgo_cmd_queue.pop_front() {
+        while let Some((cmd, req)) = self.cgo_cmd_queue.pop_front() {
             match cmd {
                 CGO_Cmd::Start => {
                     let accepted = self.scheduling_mode != EngineSchedulingMode::HostOnly
@@ -840,13 +1202,6 @@ impl Engine {
                             self.pseudo_bank
                         );
                     }
-                }
-                CGO_Cmd::Query => {
-                    let cpu = match &self.processor {
-                        EngineProcessor::CGO(cpu) => cpu,
-                        EngineProcessor::FGO(_) => unreachable!(),
-                    };
-                    req.set_payload_word0(cpu.is_finished() as u64);
                 }
             }
 
@@ -885,11 +1240,40 @@ impl Engine {
             };
 
             if self.dsim3.WillAcceptTransactionReq(&req) {
-                req.set_id(self.dsim3.get_req_id());
-                req.set_issue_time(self.clock_cycle);
+                if verbose_engine_trace()
+                    && self.scheduling_mode == EngineSchedulingMode::Sequential
+                    && self.pseudo_bank == 0
+                    && !req.is_pim()
+                {
+                    eprintln!(
+                        "SEQUENTIAL_TRACE event=dram-accept cycle={} addr={:#x}",
+                        self.clock_cycle,
+                        req.get_addr()
+                    );
+                }
+                if req.get_id().is_none() {
+                    req.set_id(self.dsim3.get_req_id());
+                }
+                if req.get_issue_time().is_none() {
+                    req.set_issue_time(self.clock_cycle);
+                }
                 self.dsim3.AddTransactionReq(req);
             } else {
-                self.dram_port.submit(req);
+                if self.scheduling_mode == EngineSchedulingMode::Sequential
+                    && self.mode == EngineMode::PIM
+                    && !req.is_pim()
+                {
+                    if verbose_engine_trace() && self.pseudo_bank == 0 {
+                        eprintln!(
+                            "SEQUENTIAL_TRACE event=dram-retry cycle={} addr={:#x}",
+                            self.clock_cycle,
+                            req.get_addr()
+                        );
+                    }
+                    self.dram_port.submit_host_in_pim_phase(req);
+                } else {
+                    self.dram_port.submit(req);
+                }
                 break;
             }
         }
@@ -910,6 +1294,19 @@ impl Engine {
         }
 
         while let Some(req) = self.dram_port.take_host_completed() {
+            if let Some(req_id) = req.get_id() {
+                self.cgo_host_quantum_req_ids.remove(&req_id);
+            }
+            if verbose_engine_trace()
+                && self.scheduling_mode == EngineSchedulingMode::Sequential
+                && self.pseudo_bank == 0
+            {
+                eprintln!(
+                    "SEQUENTIAL_TRACE event=host-complete cycle={} addr={:#x}",
+                    self.clock_cycle,
+                    req.get_addr()
+                );
+            }
             self.host_complete_queue.push_back(req);
         }
     }
@@ -923,10 +1320,14 @@ impl Engine {
             EngineSchedulingMode::Unconfigured => {
                 panic!("cannot tick an engine before configuring its scheduling mode")
             }
-            EngineSchedulingMode::CGO_only | EngineSchedulingMode::Host_CGO_share => {
+            EngineSchedulingMode::CGO_only
+            | EngineSchedulingMode::Host_CGO_share
+            | EngineSchedulingMode::Sequential
+                if matches!(self.processor, EngineProcessor::CGO(_)) =>
+            {
                 self.tick_cgo_processor();
             }
-            EngineSchedulingMode::Host_FGO_share => {
+            EngineSchedulingMode::Host_FGO_share | EngineSchedulingMode::Sequential => {
                 if matches!(self.mode, EngineMode::PIM)
                     && matches!(self.fgo_request_state, FGO_RequestState::PimInFlight)
                 {
@@ -937,6 +1338,9 @@ impl Engine {
                 }
             }
             EngineSchedulingMode::HostOnly => {}
+            EngineSchedulingMode::CGO_only | EngineSchedulingMode::Host_CGO_share => {
+                unreachable!("CGO scheduling mode configured on an FGO engine")
+            }
         }
         self.process_cgo_cmds();
         self.drain_current_port_to_dram();

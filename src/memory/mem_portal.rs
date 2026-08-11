@@ -11,6 +11,8 @@ pub struct dram_req {
     issue_time: Option<u64>,
     is_read: bool,
     is_pim: bool,
+    use_pim_timing_context: bool,
+    is_host_pim_command: bool,
 }
 
 impl dram_req {
@@ -31,6 +33,8 @@ impl dram_req {
             issue_time: None,
             is_read: is_read_,
             is_pim: is_pim_,
+            use_pim_timing_context: is_pim_,
+            is_host_pim_command: false,
         }
     }
 
@@ -86,6 +90,22 @@ impl dram_req {
 
     pub fn is_pim(&self) -> bool {
         self.is_pim
+    }
+
+    pub(crate) fn mark_host_pim_command(&mut self) {
+        self.is_host_pim_command = true;
+    }
+
+    pub(crate) fn is_host_pim_command(&self) -> bool {
+        self.is_host_pim_command
+    }
+
+    pub(crate) fn use_pim_timing_context(&self) -> bool {
+        self.use_pim_timing_context
+    }
+
+    fn mark_pim_timing_context(&mut self) {
+        self.use_pim_timing_context = true;
     }
 
     fn matches_completion(&self, other: &dram_req) -> bool {
@@ -146,6 +166,19 @@ impl dram_portal {
         } else {
             self.host_req.borrow_mut().push(req);
         }
+    }
+
+    pub(crate) fn submit_host_in_pim_phase(&mut self, mut req: dram_req) {
+        assert!(
+            !req.is_pim(),
+            "PIM-phase host request must retain host identity"
+        );
+        assert!(
+            matches!(self.get_mode(), portal_mode::PIM),
+            "PIM-phase host request requires the PIM portal"
+        );
+        req.mark_pim_timing_context();
+        self.simcpu_req.borrow_mut().push(req);
     }
 
     pub fn get_one_req(&mut self) -> Option<dram_req> {

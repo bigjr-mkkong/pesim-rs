@@ -47,6 +47,13 @@ pub mod dramsim3_ffi {
         pub fn GetPimMode(self: Pin<&mut dramsim3_ext>) -> bool;
         pub fn IsDrained(self: Pin<&mut dramsim3_ext>) -> bool;
         pub fn SetPimMode(self: Pin<&mut dramsim3_ext>, new_mode: bool);
+        pub fn RequestPause(self: Pin<&mut dramsim3_ext>);
+        pub fn IsPauseRequested(self: Pin<&mut dramsim3_ext>) -> bool;
+        pub fn IsPauseReady(self: Pin<&mut dramsim3_ext>) -> bool;
+        pub fn CommitPausedMode(self: Pin<&mut dramsim3_ext>, new_mode: bool);
+        pub fn CancelPause(self: Pin<&mut dramsim3_ext>);
+        pub fn GetPauseParkedTransactions(self: Pin<&mut dramsim3_ext>) -> u64;
+        pub fn GetPausePromotedTransactions(self: Pin<&mut dramsim3_ext>) -> u64;
 
         pub fn GetBytes(
             self: Pin<&mut dramsim3_ext>,

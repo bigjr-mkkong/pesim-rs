@@ -4,7 +4,7 @@ use crate::cpu::pimcpu_types::{fatptr_rf, inst};
 use crate::memory::AGU_unit::{AGU_ENTRY_COUNT, AGU_unit};
 use crate::memory::flat_memory::{PIM_ENTRIES_PER_CACHELINE, cpu_flat_mem};
 use crate::memory::mem_portal::{dram_portal, dram_req, portal_mode};
-use crate::sim_engine::engine_alloc::PSEUDO_BANK_ENTRIES;
+use crate::sim_engine::engine_alloc::{PIM_WORKING_SET_BASE_ENTRY, PSEUDO_BANK_ENTRIES};
 
 const DESCRIPTORS_PER_CHUNK: usize = 2;
 const AGU_TABLE_CHUNKS: u32 = (AGU_ENTRY_COUNT / DESCRIPTORS_PER_CHUNK) as u32;
@@ -73,6 +73,10 @@ impl CPU_boot_FSM {
         self.state == CPU_boot_FSM_states::Finished
     }
 
+    pub fn is_idle(&self) -> bool {
+        self.state == CPU_boot_FSM_states::IDLE
+    }
+
     pub fn tick(
         &mut self,
         fmem: &cpu_flat_mem,
@@ -83,7 +87,7 @@ impl CPU_boot_FSM {
         match self.state {
             CPU_boot_FSM_states::IDLE | CPU_boot_FSM_states::Finished => {}
             CPU_boot_FSM_states::DRAM2AGU_submit => {
-                self.submit_chunk_reads(0, AGU_TABLE_CHUNKS);
+                self.submit_chunk_reads(PIM_WORKING_SET_BASE_ENTRY, AGU_TABLE_CHUNKS);
                 self.state = CPU_boot_FSM_states::DRAM2AGU_stall;
             }
             CPU_boot_FSM_states::DRAM2AGU_stall => {
@@ -180,14 +184,15 @@ impl CPU_boot_FSM {
     fn load_agu_table(&self, fmem: &cpu_flat_mem, agu: &mut AGU_unit, rf: &mut arch_rf) {
         let mut descriptors = [(0_u32, 0_u32); AGU_ENTRY_COUNT];
 
-        for chunk_addr in 0..AGU_TABLE_CHUNKS {
+        for chunk_offset in 0..AGU_TABLE_CHUNKS {
+            let chunk_addr = PIM_WORKING_SET_BASE_ENTRY + chunk_offset;
             let words = fmem.mem_read_data(chunk_addr).unwrap_or_else(|| {
                 self.fatal(
                     "boot_memory_type_mismatch",
                     format_args!("chunk={chunk_addr}"),
                 )
             });
-            let first_entry = chunk_addr as usize * DESCRIPTORS_PER_CHUNK;
+            let first_entry = chunk_offset as usize * DESCRIPTORS_PER_CHUNK;
             descriptors[first_entry] = (words[0], words[1]);
             descriptors[first_entry + 1] = (words[2], words[3]);
         }
@@ -354,15 +359,21 @@ mod tests {
         let mut imem = IMEM::new();
         let mut rf = arch_rf::new();
 
-        // Entry zero describes one instruction chunk at chunk address eight.
-        fmem.mem_write_data(0, &[8, 1, 0, 0]).unwrap();
+        // Entry zero describes one instruction chunk after the AGU table.
+        let program_base = PIM_WORKING_SET_BASE_ENTRY + 8;
+        fmem.mem_write_data(PIM_WORKING_SET_BASE_ENTRY, &[program_base, 1, 0, 0])
+            .unwrap();
         for chunk in 1..AGU_TABLE_CHUNKS {
-            fmem.mem_write_data(chunk, &[0; 4]).unwrap();
+            fmem.mem_write_data(PIM_WORKING_SET_BASE_ENTRY + chunk, &[0; 4])
+                .unwrap();
         }
         let add = encode(0x1, 3, 1, 2, 0);
         let exit = encode(0xc, 3, 3, 0, 0);
-        fmem.mem_write_data(8, &[u32::from(add) | (u32::from(exit) << 16), 0, 0, 0])
-            .unwrap();
+        fmem.mem_write_data(
+            program_base,
+            &[u32::from(add) | (u32::from(exit) << 16), 0, 0, 0],
+        )
+        .unwrap();
 
         assert!(boot.set_on());
         assert!(!boot.set_on(), "a repeated start must not reset boot");
@@ -382,7 +393,19 @@ mod tests {
                 .iter()
                 .map(dram_req::get_addr)
                 .collect::<Vec<_>>(),
-            vec![0, 0, 0, 0, 1, 1, 1, 1]
+            {
+                let first = u64::from(PIM_WORKING_SET_BASE_ENTRY) / PIM_ENTRIES_PER_CACHELINE;
+                vec![
+                    first,
+                    first,
+                    first,
+                    first,
+                    first + 1,
+                    first + 1,
+                    first + 1,
+                    first + 1,
+                ]
+            }
         );
 
         // An empty request vector is not enough: all timing responses are required.
@@ -397,7 +420,7 @@ mod tests {
         engine_port.complete(descriptor_reqs[7].clone());
         boot.tick(&fmem, &mut agu, &mut imem, &mut rf);
         assert_eq!(boot.state, CPU_boot_FSM_states::ReadInsts);
-        assert_eq!(agu.get_entry(0), Some((8, 1)));
+        assert_eq!(agu.get_entry(0), Some((program_base, 1)));
         for id in 0_u8..8 {
             assert_eq!(rf.read_fregs(id), Some(fatptr_rf::new(id, 0)));
         }
@@ -410,7 +433,10 @@ mod tests {
         let program_req = engine_port
             .get_one_req()
             .expect("one instruction chunk should issue one timed read");
-        assert_eq!(program_req.get_addr(), 2);
+        assert_eq!(
+            program_req.get_addr(),
+            u64::from(program_base) / PIM_ENTRIES_PER_CACHELINE
+        );
         assert!(engine_port.get_one_req().is_none());
 
         boot.tick(&fmem, &mut agu, &mut imem, &mut rf);

@@ -352,6 +352,34 @@ impl dramsim3_wrapper {
         }
     }
 
+    pub fn request_pause(&mut self) {
+        dramsim3_ext::RequestPause(self.ms.pin_mut());
+    }
+
+    pub fn is_pause_requested(&mut self) -> bool {
+        dramsim3_ext::IsPauseRequested(self.ms.pin_mut())
+    }
+
+    pub fn is_pause_ready(&mut self) -> bool {
+        dramsim3_ext::IsPauseReady(self.ms.pin_mut())
+    }
+
+    pub fn commit_paused_mode(&mut self, new_mode: bool) {
+        dramsim3_ext::CommitPausedMode(self.ms.pin_mut(), new_mode);
+    }
+
+    pub fn cancel_pause(&mut self) {
+        dramsim3_ext::CancelPause(self.ms.pin_mut());
+    }
+
+    pub fn pause_parked_transactions(&mut self) -> u64 {
+        dramsim3_ext::GetPauseParkedTransactions(self.ms.pin_mut())
+    }
+
+    pub fn pause_promoted_transactions(&mut self) -> u64 {
+        dramsim3_ext::GetPausePromotedTransactions(self.ms.pin_mut())
+    }
+
     /*
      * FIXME
      * This function is a newly added function for dramsim3
@@ -382,8 +410,12 @@ impl dramsim3_wrapper {
 
         let real_addr = self.request_addr_to_dram_addr(req.get_addr(), req.is_pim());
         let is_write = !req.is_read();
-        let ret =
-            dramsim3_ext::AddTransaction(self.ms.pin_mut(), real_addr, is_write, req.is_pim());
+        let ret = dramsim3_ext::AddTransaction(
+            self.ms.pin_mut(),
+            real_addr,
+            is_write,
+            req.use_pim_timing_context(),
+        );
 
         if ret {
             if is_write {

@@ -5,22 +5,18 @@ use crate::memory::mem_portal::cacheline_payload;
 pub enum pim_cmd {
     FGO(pe_inst),
     CGO_Start,
-    CGO_Query,
+    PIM_Query,
     Ctrl_CGO_Alloc { asid: u64 },
     Ctrl_FGO_Alloc { asid: u64 },
 }
 
 impl pim_cmd {
     pub fn expects_write(&self) -> bool {
-        !matches!(self, pim_cmd::CGO_Query)
+        !matches!(self, pim_cmd::PIM_Query)
     }
 }
 
-pub const PIM_CMD_REGION_SIZE: u64 = 512 * 1024;
-pub const DEFAULT_CONTROLLER_SIZE: u64 = 8 * 1024 * 1024 * 1024;
-// Unit tests use a controller whose guest-visible base is zero.
-pub const PIM_CMD_PAGE_BASE: u64 = DEFAULT_CONTROLLER_SIZE - PIM_CMD_REGION_SIZE;
-pub const PIM_CMD_PAGE_END: u64 = DEFAULT_CONTROLLER_SIZE - 1;
+pub const PIM_CMD_PAGE_SIZE: u64 = 4 * 1024;
 pub const PIM_CMD_SLOT_SIZE: u64 = std::mem::size_of::<cacheline_payload>() as u64;
 
 const REG_A_SHIFT: u32 = 0;
@@ -43,29 +39,16 @@ const OP_LD32: u64 = 8;
 const OP_ST32: u64 = 9;
 
 const OP_CGO_START: u64 = 10;
-const OP_CGO_QUERY: u64 = 11;
+pub const PIM_QUERY_OFFSET: u64 = 11 * PIM_CMD_SLOT_SIZE;
 
 const OP_CGO_ALLOC: u64 = 12;
 const OP_FGO_ALLOC: u64 = 13;
 
-pub fn decode_pim_cmd(
-    addr: u64,
-    payload: &cacheline_payload,
-) -> Result<Option<pim_cmd>, &'static str> {
-    decode_pim_cmd_in_region(addr, payload, PIM_CMD_PAGE_BASE, PIM_CMD_PAGE_END)
-}
-
-pub fn decode_pim_cmd_in_region(
-    addr: u64,
-    payload: &cacheline_payload,
-    command_base: u64,
-    command_end: u64,
-) -> Result<Option<pim_cmd>, &'static str> {
-    if !(command_base..=command_end).contains(&addr) {
-        return Ok(None);
+pub fn decode_pim_cmd(offset: u64, payload: &cacheline_payload) -> Result<pim_cmd, &'static str> {
+    if offset >= PIM_CMD_PAGE_SIZE {
+        return Err("PIM command offset is outside the MMIO page");
     }
 
-    let offset = addr - command_base;
     if offset % PIM_CMD_SLOT_SIZE != 0 {
         return Err("PIM command address is not cacheline aligned");
     }
@@ -79,52 +62,52 @@ pub fn decode_pim_cmd_in_region(
     let mem_addr = ((encoded >> MEM_ADDR_SHIFT) & MEM_ADDR_MASK) as u32;
 
     match opcode {
-        OP_NOP => Ok(Some(pim_cmd::FGO(pe_inst::NOP))),
-        OP_ADD128 => Ok(Some(pim_cmd::FGO(pe_inst::ADD128 {
+        OP_NOP => Ok(pim_cmd::FGO(pe_inst::NOP)),
+        OP_ADD128 => Ok(pim_cmd::FGO(pe_inst::ADD128 {
             vRD: reg_a,
             vRS0: reg_b,
             vRS1: reg_c,
-        }))),
-        OP_SUB128 => Ok(Some(pim_cmd::FGO(pe_inst::SUB128 {
+        })),
+        OP_SUB128 => Ok(pim_cmd::FGO(pe_inst::SUB128 {
             vRD: reg_a,
             vRS0: reg_b,
             vRS1: reg_c,
-        }))),
-        OP_MUL128 => Ok(Some(pim_cmd::FGO(pe_inst::MUL128 {
+        })),
+        OP_MUL128 => Ok(pim_cmd::FGO(pe_inst::MUL128 {
             vRD: reg_a,
             vRS0: reg_b,
             vRS1: reg_c,
-        }))),
-        OP_MAC128 => Ok(Some(pim_cmd::FGO(pe_inst::MAC128 {
+        })),
+        OP_MAC128 => Ok(pim_cmd::FGO(pe_inst::MAC128 {
             sRD: reg_a,
             sRS0: reg_d,
             vRS0: reg_b,
             vRS1: reg_c,
-        }))),
-        OP_RELU => Ok(Some(pim_cmd::FGO(pe_inst::ReLU {
+        })),
+        OP_RELU => Ok(pim_cmd::FGO(pe_inst::ReLU {
             vRD: reg_a,
             vRS0: reg_b,
-        }))),
-        OP_LD128 => Ok(Some(pim_cmd::FGO(pe_inst::LD128 {
+        })),
+        OP_LD128 => Ok(pim_cmd::FGO(pe_inst::LD128 {
             vRD: reg_a,
             addr: mem_addr,
-        }))),
-        OP_ST128 => Ok(Some(pim_cmd::FGO(pe_inst::ST128 {
+        })),
+        OP_ST128 => Ok(pim_cmd::FGO(pe_inst::ST128 {
             vRS: reg_a,
             addr: mem_addr,
-        }))),
-        OP_LD32 => Ok(Some(pim_cmd::FGO(pe_inst::LD32 {
+        })),
+        OP_LD32 => Ok(pim_cmd::FGO(pe_inst::LD32 {
             sRD: reg_a,
             addr: mem_addr,
-        }))),
-        OP_ST32 => Ok(Some(pim_cmd::FGO(pe_inst::ST32 {
+        })),
+        OP_ST32 => Ok(pim_cmd::FGO(pe_inst::ST32 {
             sRS: reg_a,
             addr: mem_addr,
-        }))),
-        OP_CGO_START => Ok(Some(pim_cmd::CGO_Start)),
-        OP_CGO_QUERY => Ok(Some(pim_cmd::CGO_Query)),
-        OP_CGO_ALLOC => Ok(Some(pim_cmd::Ctrl_CGO_Alloc { asid: encoded })),
-        OP_FGO_ALLOC => Ok(Some(pim_cmd::Ctrl_FGO_Alloc { asid: encoded })),
+        })),
+        OP_CGO_START => Ok(pim_cmd::CGO_Start),
+        11 => Ok(pim_cmd::PIM_Query),
+        OP_CGO_ALLOC => Ok(pim_cmd::Ctrl_CGO_Alloc { asid: encoded }),
+        OP_FGO_ALLOC => Ok(pim_cmd::Ctrl_FGO_Alloc { asid: encoded }),
         _ => Err("unknown PIM command opcode"),
     }
 }

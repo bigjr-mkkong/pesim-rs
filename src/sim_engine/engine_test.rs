@@ -28,6 +28,149 @@ fn boot_controller_is_guarded_by_processor_kind() {
 }
 
 #[test]
+fn host_cgo_idle_serves_all_host_requests_without_switching() {
+    let mut engine = Engine::new_cgo();
+    engine
+        .set_scheduling_mode(EngineSchedulingMode::Host_CGO_share)
+        .unwrap();
+    assert_eq!(engine.cgo_lifecycle(), CgoLifecycle::Idle);
+    assert_eq!(engine.mode, EngineMode::HOST);
+
+    let addresses = [0x40, 0x80, 0xc0];
+    for addr in addresses {
+        engine.enqueue_host_mem_request(dram_req::new(addr, true, false));
+    }
+
+    let mut completed = Vec::new();
+    for _ in 0..10_000 {
+        engine.tick();
+        assert_eq!(engine.mode, EngineMode::HOST);
+        while let Some(req) = engine.get_host_complete() {
+            completed.push(req.get_addr());
+        }
+        if completed.len() == addresses.len() {
+            break;
+        }
+    }
+
+    completed.sort_unstable();
+    assert_eq!(completed, addresses);
+}
+
+#[test]
+fn host_cgo_boot_is_pim_exclusive_and_queues_host_traffic() {
+    let mut engine = Engine::new_cgo();
+    engine
+        .set_scheduling_mode(EngineSchedulingMode::Host_CGO_share)
+        .unwrap();
+    assert!(
+        engine
+            .cgo_boot
+            .as_mut()
+            .expect("CGO engine must own a boot controller")
+            .set_on()
+    );
+    assert_eq!(engine.cgo_lifecycle(), CgoLifecycle::Booting);
+
+    engine.enqueue_host_mem_request(dram_req::new(0x40, true, false));
+    for _ in 0..100 {
+        engine.schedule();
+        engine.mode = engine.next_mode;
+        assert_eq!(engine.host_pool.len(), 1);
+        if engine.mode == EngineMode::PIM {
+            break;
+        }
+    }
+
+    assert_eq!(engine.mode, EngineMode::PIM);
+    engine.schedule();
+    engine.mode = engine.next_mode;
+    assert_eq!(engine.mode, EngineMode::PIM);
+    assert_eq!(engine.host_pool.len(), 1);
+}
+
+#[test]
+fn host_cgo_finished_hands_off_once_then_stays_host_exclusive() {
+    let mut engine = Engine::new_cgo();
+    engine
+        .set_scheduling_mode(EngineSchedulingMode::Host_CGO_share)
+        .unwrap();
+    engine.force_pim_mode();
+    engine
+        .get_cpu()
+        .get_imem()
+        .flash_in(&[inst::EqualExit { rd: 3, rs1: 3 }]);
+    engine.get_cpu().start();
+
+    for _ in 0..100 {
+        engine.tick();
+        if engine.get_cpu().is_finished() {
+            break;
+        }
+    }
+    assert!(engine.get_cpu().is_finished());
+    assert_eq!(engine.cgo_lifecycle(), CgoLifecycle::Finished);
+
+    let addresses = [0x40, 0x80, 0xc0];
+    for addr in addresses {
+        engine.enqueue_host_mem_request(dram_req::new(addr, true, false));
+    }
+
+    let mut delay_regions = usize::from(engine.mode == EngineMode::switch_delay);
+    let mut was_in_delay = engine.mode == EngineMode::switch_delay;
+    let mut reached_host = false;
+    let mut completed = Vec::new();
+    for _ in 0..10_000 {
+        engine.tick();
+        let in_delay = engine.mode == EngineMode::switch_delay;
+        if in_delay && !was_in_delay {
+            delay_regions += 1;
+        }
+        was_in_delay = in_delay;
+
+        if reached_host {
+            assert_eq!(engine.mode, EngineMode::HOST);
+        } else if engine.mode == EngineMode::HOST {
+            reached_host = true;
+        }
+
+        while let Some(req) = engine.get_host_complete() {
+            completed.push(req.get_addr());
+        }
+        if completed.len() == addresses.len() {
+            break;
+        }
+    }
+
+    completed.sort_unstable();
+    assert_eq!(completed, addresses);
+    assert!(reached_host);
+    assert_eq!(delay_regions, 1);
+    assert_eq!(engine.mode, EngineMode::HOST);
+}
+
+#[test]
+fn lifecycle_initial_mode_change_is_limited_to_host_cgo_share() {
+    let mut cgo_only = Engine::new_cgo();
+    cgo_only
+        .set_scheduling_mode(EngineSchedulingMode::CGO_only)
+        .unwrap();
+    assert_eq!(cgo_only.mode, EngineMode::PIM);
+
+    let mut sequential = Engine::new_cgo();
+    sequential
+        .set_scheduling_mode(EngineSchedulingMode::Sequential)
+        .unwrap();
+    assert_eq!(sequential.mode, EngineMode::HOST);
+
+    let mut fgo_share = Engine::new_fgo();
+    fgo_share
+        .set_scheduling_mode(EngineSchedulingMode::Host_FGO_share)
+        .unwrap();
+    assert_eq!(fgo_share.mode, EngineMode::PIM);
+}
+
+#[test]
 fn engine_runs_pim_load_through_mem_fsm_and_dram_portal() {
     let mut engine = Engine::new_cgo();
     engine
@@ -87,6 +230,137 @@ fn dramsim3_wrapper_test() {
     println!("dsim3 wrapper success to resposne to request");
 }
 
+fn submit_dsim_request(dsim3: &mut dramsim3_wrapper, mut req: dram_req) {
+    assert!(dsim3.WillAcceptTransactionReq(&req));
+    req.set_id(dsim3.get_req_id());
+    req.set_issue_time(dsim3.get_clock_tick() as u64);
+    dsim3.AddTransactionReq(req);
+}
+
+#[test]
+fn dramsim_pause_ignores_accepted_but_unpromoted_transactions() {
+    let mut dsim3 = dramsim3_wrapper::new(PIM_DSIM3_CFG_PATH, DSIM3_OUT_DIR, 0, 0, 0, 0);
+    dsim3.SetPimMode(true);
+    for addr in [0x40, 0x80, 0xc0] {
+        submit_dsim_request(&mut dsim3, dram_req::new(addr, true, false));
+    }
+
+    dsim3.request_pause();
+    assert_eq!(dsim3.pause_parked_transactions(), 3);
+    assert_eq!(dsim3.pause_promoted_transactions(), 0);
+    assert!(dsim3.is_pause_ready());
+    assert!(!dsim3.WillAcceptTransaction(0x100, false));
+
+    dsim3.commit_paused_mode(false);
+    let mut completed = Vec::new();
+    for _ in 0..10_000 {
+        completed.extend(dsim3.ClockTick());
+        if completed.len() == 3 {
+            break;
+        }
+    }
+    completed.sort_by_key(dram_req::get_addr);
+    assert_eq!(
+        completed.iter().map(dram_req::get_addr).collect::<Vec<_>>(),
+        vec![0x40, 0x80, 0xc0]
+    );
+}
+
+#[test]
+fn dramsim_pause_drains_only_the_promoted_prefix_and_preserves_parked_work() {
+    let mut dsim3 = dramsim3_wrapper::new(PIM_DSIM3_CFG_PATH, DSIM3_OUT_DIR, 0, 0, 0, 0);
+    dsim3.SetPimMode(false);
+    for addr in [0x40, 0x80, 0xc0, 0x100] {
+        submit_dsim_request(&mut dsim3, dram_req::new(addr, true, false));
+    }
+
+    assert!(dsim3.ClockTick().is_empty());
+    dsim3.request_pause();
+    assert_eq!(dsim3.pause_promoted_transactions(), 1);
+    assert_eq!(dsim3.pause_parked_transactions(), 3);
+    assert!(!dsim3.is_pause_ready());
+
+    let mut first_phase = Vec::new();
+    for _ in 0..10_000 {
+        first_phase.extend(dsim3.ClockTick());
+        if dsim3.is_pause_ready() {
+            break;
+        }
+    }
+    assert!(dsim3.is_pause_ready());
+    assert_eq!(first_phase.len(), 1);
+    dsim3.commit_paused_mode(true);
+
+    dsim3.request_pause();
+    assert_eq!(dsim3.pause_promoted_transactions(), 0);
+    assert_eq!(dsim3.pause_parked_transactions(), 3);
+    assert!(dsim3.is_pause_ready());
+    dsim3.commit_paused_mode(false);
+
+    let mut second_phase = Vec::new();
+    for _ in 0..10_000 {
+        second_phase.extend(dsim3.ClockTick());
+        if second_phase.len() == 3 {
+            break;
+        }
+    }
+    assert_eq!(second_phase.len(), 3);
+}
+
+#[test]
+fn dramsim_pause_tracks_merged_reads_through_architectural_completion() {
+    let mut dsim3 = dramsim3_wrapper::new(PIM_DSIM3_CFG_PATH, DSIM3_OUT_DIR, 0, 0, 0, 0);
+    dsim3.SetPimMode(false);
+    submit_dsim_request(&mut dsim3, dram_req::new(0x40, true, false));
+    submit_dsim_request(&mut dsim3, dram_req::new(0x40, true, false));
+
+    assert!(dsim3.ClockTick().is_empty());
+    dsim3.request_pause();
+    assert_eq!(dsim3.pause_promoted_transactions(), 2);
+    assert_eq!(dsim3.pause_parked_transactions(), 0);
+
+    let mut completed = Vec::new();
+    for _ in 0..10_000 {
+        completed.extend(dsim3.ClockTick());
+        if dsim3.is_pause_ready() {
+            break;
+        }
+    }
+    assert!(dsim3.is_pause_ready());
+    assert_eq!(completed.len(), 2);
+    dsim3.cancel_pause();
+    assert!(!dsim3.is_pause_requested());
+    assert!(dsim3.WillAcceptTransaction(0x80, false));
+}
+
+#[test]
+fn dramsim_pause_drains_promoted_work_across_physical_banks() {
+    let mut dsim3 = dramsim3_wrapper::new(PIM_DSIM3_CFG_PATH, DSIM3_OUT_DIR, 0, 0, 0, 0);
+    dsim3.SetPimMode(false);
+    let addresses = (0..4)
+        .map(|bank| dsim3.exact_local_to_global_addr(0, 0, 0, bank, 0, 0))
+        .collect::<Vec<_>>();
+    for addr in addresses {
+        submit_dsim_request(&mut dsim3, dram_req::new(addr, true, false));
+    }
+    for _ in 0..4 {
+        dsim3.ClockTick();
+    }
+
+    dsim3.request_pause();
+    assert!(dsim3.pause_promoted_transactions() > 1);
+    let expected = dsim3.pause_promoted_transactions() as usize;
+    let mut completed = Vec::new();
+    for _ in 0..10_000 {
+        completed.extend(dsim3.ClockTick());
+        if dsim3.is_pause_ready() {
+            break;
+        }
+    }
+    assert!(dsim3.is_pause_ready());
+    assert_eq!(completed.len(), expected);
+}
+
 use crate::PE::types::inst as pe_inst;
 use crate::sim_engine::engine_alloc::{PSEUDO_BANK_CACHELINES, PSEUDO_BANK_ENTRIES};
 use crate::sim_engine::request_router::{decode_pim_cmd, pim_cmd};
@@ -96,7 +370,7 @@ fn engine_request(addr: u64, is_write: bool) -> EngineRequest {
     EngineRequest {
         addr,
         is_write,
-        decoded_cmd: decode_pim_cmd(addr, &[0; 8]),
+        decoded_cmd: decode_pim_cmd(addr, &[0; 8]).map(Some),
     }
 }
 
@@ -164,6 +438,161 @@ fn fgo_near_switch_delay_counts_complete_cycles_in_both_directions() {
 fn engine_uses_near_switch_latency_derived_from_pim_config() {
     let engine = Engine::new_fgo();
     assert_eq!(engine.near_switch_cycles, 18);
+}
+
+#[test]
+fn prec_act_engine_uses_full_trp_plus_trcd_switch_latency() {
+    let mut engine = Engine::new_fgo_configured(
+        0,
+        0,
+        crate::PIM_PRECACT_DSIM3_CFG_PATH,
+        crate::DSIM3_OUT_DIR,
+        0,
+        0,
+        0,
+        0,
+        0,
+    );
+    assert_eq!(engine.near_switch_cycles, 34);
+    assert!(!engine.dsim3.get_pim_switch_enabled());
+}
+
+fn assert_empty_cgo_switch_delay(mut engine: Engine, expected_delay: u64) {
+    engine
+        .set_scheduling_mode(EngineSchedulingMode::Host_CGO_share)
+        .unwrap();
+    assert_eq!(engine.mode, EngineMode::HOST);
+
+    engine.switch(EngineMode::HOST);
+    assert_eq!(engine.next_mode, EngineMode::switch_delay);
+    for _ in 0..expected_delay {
+        engine.switch(EngineMode::switch_delay);
+        assert_eq!(engine.next_mode, EngineMode::switch_delay);
+    }
+    engine.switch(EngineMode::switch_delay);
+    assert_eq!(engine.next_mode, EngineMode::PIM);
+    assert!(!engine.dsim3.is_pause_requested());
+
+    let stats = engine.cgo_switch_stats().unwrap().host_to_pim;
+    assert_eq!(stats.requests, 1);
+    assert_eq!(stats.commits, 1);
+    assert_eq!(stats.cancellations, 0);
+    assert_eq!(stats.source_quiesce_cycles, 0);
+    assert_eq!(stats.promoted_drain_cycles, 0);
+    assert_eq!(stats.fixed_delay_cycles, expected_delay);
+    assert_eq!(stats.commit_guard_cycles, 0);
+    assert_eq!(stats.total_cycles(), expected_delay);
+}
+
+#[test]
+fn cgo_fast_switch_charges_exactly_eighteen_fixed_cycles() {
+    assert_empty_cgo_switch_delay(Engine::new_cgo(), 18);
+}
+
+#[test]
+fn cgo_prec_act_charges_exactly_thirty_four_fixed_cycles() {
+    let engine = Engine::new_cgo_configured(
+        0,
+        0,
+        crate::PIM_PRECACT_DSIM3_CFG_PATH,
+        crate::DSIM3_OUT_DIR,
+        0,
+        0,
+        0,
+        0,
+        0,
+    );
+    assert_empty_cgo_switch_delay(engine, 34);
+}
+
+#[test]
+fn cgo_host_quantum_completes_architecturally_before_pause_is_armed() {
+    let mut engine = Engine::new_cgo();
+    engine
+        .set_scheduling_mode(EngineSchedulingMode::Host_CGO_share)
+        .unwrap();
+    engine.get_cpu().start();
+    engine.enqueue_host_mem_request(dram_req::new(0x40, true, false));
+
+    engine.schedule();
+    engine.mode = engine.next_mode;
+    assert_eq!(engine.mode, EngineMode::switch_delay);
+    assert_eq!(engine.cgo_host_quantum_req_ids.len(), 1);
+    assert!(!engine.dsim3.is_pause_requested());
+
+    for _ in 0..10_000 {
+        engine.drain_current_port_to_dram();
+        for req in engine.dsim3.ClockTick() {
+            engine.dram_port.complete(req);
+        }
+        engine.drain_host_completions();
+        engine.switch(EngineMode::switch_delay);
+
+        if engine.dsim3.is_pause_requested() {
+            assert!(engine.cgo_host_quantum_req_ids.is_empty());
+            assert!(engine.get_host_complete().is_some());
+            return;
+        }
+    }
+
+    panic!("CGO host quantum did not reach its architectural completion boundary");
+}
+
+#[test]
+fn cgo_switch_cancellation_unblocks_parked_dram_transactions() {
+    let mut engine = Engine::new_cgo();
+    engine
+        .set_scheduling_mode(EngineSchedulingMode::Host_CGO_share)
+        .unwrap();
+    engine.switch(EngineMode::HOST);
+    engine.switch(EngineMode::switch_delay);
+    assert!(engine.dsim3.is_pause_requested());
+
+    engine.force_host_mode();
+    assert!(!engine.dsim3.is_pause_requested());
+    assert_eq!(engine.mode, EngineMode::HOST);
+    let stats = engine.cgo_switch_stats().unwrap().host_to_pim;
+    assert_eq!(stats.requests, 1);
+    assert_eq!(stats.commits, 0);
+    assert_eq!(stats.cancellations, 1);
+}
+
+#[test]
+fn sequential_fgo_handoff_never_enters_switch_delay() {
+    let mut engine = Engine::new_fgo();
+    engine
+        .set_scheduling_mode(EngineSchedulingMode::Sequential)
+        .unwrap();
+    assert_eq!(engine.mode, EngineMode::HOST);
+
+    let (addr, payload) = encode_fgo_cmd(pe_inst::NOP);
+    engine.enqueue_host_pim_request(
+        dram_req::new_with_payload(addr, payload, false, false),
+        pim_cmd::FGO(pe_inst::NOP),
+    );
+
+    engine.enqueue_host_mem_request(dram_req::new(0x40, true, false));
+
+    let mut saw_pim_completion = false;
+    let mut saw_host_completion = false;
+    for _ in 0..10_000 {
+        engine.tick();
+        assert_ne!(engine.mode, EngineMode::switch_delay);
+        while let Some(completed) = engine.get_host_complete() {
+            if completed.get_addr() == addr {
+                saw_pim_completion = true;
+            }
+            if completed.get_addr() == 0x40 {
+                saw_host_completion = true;
+            }
+        }
+        if saw_pim_completion && saw_host_completion {
+            assert!(engine.reached_final_barrier());
+            return;
+        }
+    }
+
+    panic!("sequential FGO command did not complete");
 }
 
 #[test]
@@ -337,15 +766,50 @@ fn cgo_rejects_encoded_pe_request() {
 }
 
 #[test]
-fn fgo_rejects_cgo_commands_and_cgo_query_is_read_only() {
+fn fgo_latest_nop_must_retire_to_reach_the_final_barrier() {
+    let mut engine = Engine::new_fgo();
+    engine
+        .set_scheduling_mode(EngineSchedulingMode::Host_FGO_share)
+        .unwrap();
+
+    let (nop_addr, nop_payload) = encode_fgo_cmd(pe_inst::NOP);
+    engine.enqueue_host_pim_request(
+        dram_req::new_with_payload(nop_addr, nop_payload, false, false),
+        pim_cmd::FGO(pe_inst::NOP),
+    );
+    assert!(!engine.reached_final_barrier());
+
+    for _ in 0..16 {
+        engine.tick();
+        if engine.reached_final_barrier() {
+            break;
+        }
+    }
+    assert!(engine.reached_final_barrier());
+
+    let add = pe_inst::ADD128 {
+        vRD: 3,
+        vRS0: 1,
+        vRS1: 2,
+    };
+    let (add_addr, add_payload) = encode_fgo_cmd(add);
+    engine.enqueue_host_pim_request(
+        dram_req::new_with_payload(add_addr, add_payload, false, false),
+        pim_cmd::FGO(add),
+    );
+    assert!(!engine.reached_final_barrier());
+}
+
+#[test]
+fn engines_reject_sim_level_pim_query_and_cgo_start_is_write_only() {
     let mut fgo = Engine::new_fgo();
-    let (query_addr, _) = encode_pim_cmd(pim_cmd::CGO_Query);
+    let (query_addr, _) = encode_pim_cmd(pim_cmd::PIM_Query);
     let (start_addr, _) = encode_pim_cmd(pim_cmd::CGO_Start);
     assert!(!fgo.canAccept(engine_request(query_addr, false)));
     assert!(!fgo.canAccept(engine_request(start_addr, true)));
 
     let mut cgo = Engine::new_cgo();
-    assert!(cgo.canAccept(engine_request(query_addr, false)));
+    assert!(!cgo.canAccept(engine_request(query_addr, false)));
     assert!(!cgo.canAccept(engine_request(query_addr, true)));
     assert!(cgo.canAccept(engine_request(start_addr, true)));
     assert!(!cgo.canAccept(engine_request(start_addr, false)));
@@ -357,14 +821,16 @@ fn engine_admission_uses_the_supplied_decode_result() {
     let request = EngineRequest {
         addr: 0x40,
         is_write: false,
-        decoded_cmd: Ok(Some(pim_cmd::CGO_Query)),
+        decoded_cmd: Ok(Some(pim_cmd::PIM_Query)),
     };
 
-    assert!(engine.canAccept(request));
+    assert!(!engine.canAccept(request));
 }
 
 #[test]
-fn cgo_start_gates_cpu_execution_and_query_reports_finished() {
+fn cgo_start_gates_cpu_execution_and_equal_exit_marks_the_barrier() {
+    use crate::sim_engine::engine_alloc::PIM_WORKING_SET_BASE_ENTRY;
+
     let mut engine = Engine::new_cgo();
     engine
         .set_scheduling_mode(EngineSchedulingMode::CGO_only)
@@ -374,13 +840,16 @@ fn cgo_start_gates_cpu_execution_and_query_reports_finished() {
     engine
         .get_cpu()
         .get_fmem()
-        .mem_write_data(0, &[8, 1, 0, 0])
+        .mem_write_data(
+            PIM_WORKING_SET_BASE_ENTRY,
+            &[PIM_WORKING_SET_BASE_ENTRY + 8, 1, 0, 0],
+        )
         .unwrap();
     for chunk in 1..8 {
         engine
             .get_cpu()
             .get_fmem()
-            .mem_write_data(chunk, &[0; 4])
+            .mem_write_data(PIM_WORKING_SET_BASE_ENTRY + chunk, &[0; 4])
             .unwrap();
     }
     let add = (0x1_u32 << 12) | (3 << 9) | (1 << 6) | (2 << 3);
@@ -388,7 +857,10 @@ fn cgo_start_gates_cpu_execution_and_query_reports_finished() {
     engine
         .get_cpu()
         .get_fmem()
-        .mem_write_data(8, &[add | (equal_exit << 16), 0, 0, 0])
+        .mem_write_data(
+            PIM_WORKING_SET_BASE_ENTRY + 8,
+            &[add | (equal_exit << 16), 0, 0, 0],
+        )
         .unwrap();
 
     for _ in 0..8 {
@@ -396,16 +868,7 @@ fn cgo_start_gates_cpu_execution_and_query_reports_finished() {
     }
     assert_eq!(engine.get_cpu().get_RF().read_vregs(3), [0; 4]);
 
-    let (query_addr, query_payload) = encode_pim_cmd(pim_cmd::CGO_Query);
-    engine.enqueue_host_pim_request(
-        dram_req::new_with_payload(query_addr, query_payload, true, false),
-        pim_cmd::CGO_Query,
-    );
-    engine.tick();
-    let before = engine
-        .get_host_complete()
-        .expect("CGO query should complete on the next tick");
-    assert_eq!(before.get_payload()[0], 0);
+    assert!(!engine.reached_final_barrier());
 
     let (start_addr, start_payload) = encode_pim_cmd(pim_cmd::CGO_Start);
     engine.enqueue_host_pim_request(
@@ -456,16 +919,7 @@ fn cgo_start_gates_cpu_execution_and_query_reports_finished() {
     }
     assert_eq!(engine.get_cpu().get_RF().read_vregs(3), [7; 4]);
     assert!(engine.get_cpu().is_finished());
-
-    engine.enqueue_host_pim_request(
-        dram_req::new_with_payload(query_addr, query_payload, true, false),
-        pim_cmd::CGO_Query,
-    );
-    engine.tick();
-    let after = engine
-        .get_host_complete()
-        .expect("CGO query should complete on the next tick");
-    assert_eq!(after.get_payload()[0], 1);
+    assert!(engine.reached_final_barrier());
 }
 
 #[test]
