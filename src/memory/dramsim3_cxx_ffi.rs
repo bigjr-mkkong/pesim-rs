@@ -40,6 +40,13 @@ pub mod dramsim3_ffi {
         pub fn GetBurstLength(self: Pin<&mut dramsim3_ext>) -> i32;
         pub fn GetQueueSize(self: Pin<&mut dramsim3_ext>) -> i32;
         pub fn GetNearSwitchLatency(self: Pin<&mut dramsim3_ext>) -> i32;
+        pub fn GetToggleOnLatency(self: Pin<&mut dramsim3_ext>) -> i32;
+        pub fn GetToggleOffLatency(self: Pin<&mut dramsim3_ext>) -> i32;
+        pub fn SetToggleLatencies(
+            self: Pin<&mut dramsim3_ext>,
+            toggle_on_cycles: i32,
+            toggle_off_cycles: i32,
+        );
         pub fn GetPimSwitchEnabled(self: Pin<&mut dramsim3_ext>) -> bool;
         pub fn GetCapacityBytes(self: Pin<&mut dramsim3_ext>) -> u64;
         pub fn GetClock(self: Pin<&mut dramsim3_ext>) -> i32;

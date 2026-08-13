@@ -314,6 +314,21 @@ impl dramsim3_wrapper {
         dramsim3_ext::GetNearSwitchLatency(self.ms.pin_mut())
     }
 
+    pub fn get_toggle_latencies(&mut self) -> (i32, i32) {
+        (
+            dramsim3_ext::GetToggleOnLatency(self.ms.pin_mut()),
+            dramsim3_ext::GetToggleOffLatency(self.ms.pin_mut()),
+        )
+    }
+
+    pub fn set_toggle_latencies(&mut self, toggle_on_cycles: i32, toggle_off_cycles: i32) {
+        assert!(
+            toggle_on_cycles >= 0 && toggle_off_cycles >= 0,
+            "toggle latencies must be non-negative"
+        );
+        dramsim3_ext::SetToggleLatencies(self.ms.pin_mut(), toggle_on_cycles, toggle_off_cycles);
+    }
+
     pub fn get_pim_switch_enabled(&mut self) -> bool {
         dramsim3_ext::GetPimSwitchEnabled(self.ms.pin_mut())
     }

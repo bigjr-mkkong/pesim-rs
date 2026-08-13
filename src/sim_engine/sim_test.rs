@@ -4,7 +4,10 @@ use crate::memory::mem_portal::dram_req;
 use crate::sim_engine::engine::{Engine, EngineSchedulingMode};
 use crate::sim_engine::request_router::{PIM_CMD_SLOT_SIZE, pim_cmd};
 use crate::sim_engine::request_router_test::{encode_fgo_cmd, encode_pim_cmd};
-use crate::sim_engine::sim::{Sim, SimConfig, SimMode, engine_cfg};
+use crate::sim_engine::sim::{
+    EngineMut, Sim, SimConfig, SimMode, controller_engine_worker_limit, engine_cfg,
+    smt_aware_engine_worker_limit,
+};
 use std::path::PathBuf;
 
 impl Sim {
@@ -17,25 +20,17 @@ impl Sim {
         cfg: engine_cfg,
         scheduling_mode: EngineSchedulingMode,
     ) {
-        match self.engines.entry(cfg) {
-            std::collections::hash_map::Entry::Occupied(_) => {
-                panic!("Cannot add engine with given cfg: already existed");
-            }
-            std::collections::hash_map::Entry::Vacant(ent) => {
-                let mut engine = match cfg {
-                    engine_cfg::CGO { ch, ra, bg, ba, pb } => {
-                        Engine::new_cgo_at(ch, ra, bg, ba, pb)
-                    }
-                    engine_cfg::FGO { ch, ra, bg, ba, pb } => {
-                        Engine::new_fgo_at(ch, ra, bg, ba, pb)
-                    }
-                };
-                engine
-                    .set_scheduling_mode(scheduling_mode)
-                    .expect("test scheduling mode should match engine configuration");
-                ent.insert(engine);
-            }
+        if self.engines.contains_key(&cfg) {
+            panic!("Cannot add engine with given cfg: already existed");
         }
+        let mut engine = match cfg {
+            engine_cfg::CGO { ch, ra, bg, ba, pb } => Engine::new_cgo_at(ch, ra, bg, ba, pb),
+            engine_cfg::FGO { ch, ra, bg, ba, pb } => Engine::new_fgo_at(ch, ra, bg, ba, pb),
+        };
+        engine
+            .set_scheduling_mode(scheduling_mode)
+            .expect("test scheduling mode should match engine configuration");
+        self.engines.insert(cfg, engine);
     }
 
     fn cgo_engine_cfg_for_addr_for_test(&mut self, addr: u64) -> engine_cfg {
@@ -54,7 +49,7 @@ impl Sim {
         self.get_engine_cfg(addr).is_some()
     }
 
-    fn engine_mut_for_test(&mut self, cfg: engine_cfg) -> &mut Engine {
+    fn engine_mut_for_test(&mut self, cfg: engine_cfg) -> EngineMut<'_> {
         self.engines
             .get_mut(&cfg)
             .expect("Cannot find engine with given cfg")
@@ -518,7 +513,7 @@ fn sim_pimonly() {
     sim.add_engines(cfg);
     sim.set_engine_scheduling_mode(cfg, EngineSchedulingMode::CGO_only)
         .expect("CGO engine should accept CGO-only scheduling");
-    configure_vecadd(sim.engine_mut_for_test(cfg), 1, 2);
+    configure_vecadd(&mut sim.engine_mut_for_test(cfg), 1, 2);
 
     tick_pim_program(&mut sim);
 
@@ -526,7 +521,7 @@ fn sim_pimonly() {
         !sim.hasComplete(),
         "PIM-only test should not emit host completions"
     );
-    assert_vecadd_result(sim.engine_mut_for_test(cfg), 3);
+    assert_vecadd_result(&mut sim.engine_mut_for_test(cfg), 3);
 }
 
 #[test]
@@ -547,8 +542,8 @@ fn sim_multithread_pimonly() {
         .expect("CGO engine should accept CGO-only scheduling");
     sim.set_engine_scheduling_mode(second_cfg, EngineSchedulingMode::CGO_only)
         .expect("CGO engine should accept CGO-only scheduling");
-    configure_vecadd(sim.engine_mut_for_test(first_cfg), 10, 5);
-    configure_vecadd(sim.engine_mut_for_test(second_cfg), 20, 7);
+    configure_vecadd(&mut sim.engine_mut_for_test(first_cfg), 10, 5);
+    configure_vecadd(&mut sim.engine_mut_for_test(second_cfg), 20, 7);
 
     tick_pim_program(&mut sim);
 
@@ -556,8 +551,8 @@ fn sim_multithread_pimonly() {
         !sim.hasComplete(),
         "PIM-only test should not emit host completions"
     );
-    assert_vecadd_result(sim.engine_mut_for_test(first_cfg), 15);
-    assert_vecadd_result(sim.engine_mut_for_test(second_cfg), 27);
+    assert_vecadd_result(&mut sim.engine_mut_for_test(first_cfg), 15);
+    assert_vecadd_result(&mut sim.engine_mut_for_test(second_cfg), 27);
 }
 
 #[test]
@@ -573,18 +568,70 @@ fn sim_parallel_tick_ticks_each_engine_once() {
 
     sim.tick();
 
-    let expected_workers = std::thread::available_parallelism()
-        .map(usize::from)
-        .unwrap_or(1)
-        .min(sim.engines.len());
-    assert_eq!(sim.engine_tick_pool_threads, expected_workers);
-    assert_eq!(sim.engines.get(&first_cfg).unwrap().clock_cycle(), 1);
-    assert_eq!(sim.engines.get(&second_cfg).unwrap().clock_cycle(), 1);
+    let expected_workers = sim.engine_worker_limit.min(sim.engines.len());
+    assert_eq!(
+        sim.engine_tick_workers.as_ref().unwrap().len(),
+        expected_workers
+    );
+    let worker_thread_ids = sim.engine_tick_workers.as_ref().unwrap().thread_ids();
+    assert_eq!(sim.engines.shard_count(), expected_workers);
+    assert_eq!(sim.engine_mut_for_test(first_cfg).clock_cycle(), 1);
+    assert_eq!(sim.engine_mut_for_test(second_cfg).clock_cycle(), 1);
 
     sim.tick();
 
-    assert_eq!(sim.engines.get(&first_cfg).unwrap().clock_cycle(), 2);
-    assert_eq!(sim.engines.get(&second_cfg).unwrap().clock_cycle(), 2);
+    assert_eq!(
+        sim.engine_tick_workers.as_ref().unwrap().thread_ids(),
+        worker_thread_ids,
+        "engine tick workers must persist across simulated cycles"
+    );
+    assert_eq!(sim.engine_mut_for_test(first_cfg).clock_cycle(), 2);
+    assert_eq!(sim.engine_mut_for_test(second_cfg).clock_cycle(), 2);
+}
+
+#[test]
+fn sim_engine_worker_limit_uses_eighty_percent_of_smt_threads() {
+    assert_eq!(smt_aware_engine_worker_limit(1), 1);
+    assert_eq!(smt_aware_engine_worker_limit(2), 1);
+    assert_eq!(smt_aware_engine_worker_limit(32), 25);
+    assert_eq!(smt_aware_engine_worker_limit(160), 128);
+    let gib = 1024 * 1024 * 1024;
+    assert_eq!(controller_engine_worker_limit(32, 0, 8 * gib, 8 * gib), 13);
+    assert_eq!(controller_engine_worker_limit(32, 1, 8 * gib, 8 * gib), 12);
+    assert_eq!(controller_engine_worker_limit(32, 0, 2 * gib, 8 * gib), 25);
+}
+
+#[test]
+fn sim_fixed_tick_shards_distribute_canonical_order_round_robin() {
+    let mut sim = Sim::new();
+    sim.set_mode_for_test(SimMode::Pim);
+
+    let mut cfgs = Vec::new();
+    for _ in 0..5 {
+        let (_addr, cfg) = find_addr_for_new_cgo_cfg(&mut sim, &cfgs);
+        sim.add_engine_with_scheduling_for_test(cfg, EngineSchedulingMode::HostOnly);
+        cfgs.push(cfg);
+    }
+
+    let canonical = sim.engines.canonical_cfgs();
+    sim.engines.prepare_fixed_shards_with_worker_count(2);
+    let shards = sim.engines.shard_cfgs();
+
+    assert_eq!(sim.engines.canonical_cfgs(), canonical);
+    assert_eq!(shards.len(), 2);
+    assert_eq!(
+        shards[0],
+        canonical.iter().step_by(2).copied().collect::<Vec<_>>()
+    );
+    assert_eq!(
+        shards[1],
+        canonical
+            .iter()
+            .skip(1)
+            .step_by(2)
+            .copied()
+            .collect::<Vec<_>>()
+    );
 }
 
 #[test]
@@ -600,7 +647,7 @@ fn sim_pim_host_together() {
     sim.add_engines(cfg);
     sim.set_engine_scheduling_mode(cfg, EngineSchedulingMode::CGO_only)
         .expect("CGO engine should accept CGO-only scheduling");
-    configure_vecadd(sim.engine_mut_for_test(cfg), 6, 9);
+    configure_vecadd(&mut sim.engine_mut_for_test(cfg), 6, 9);
 
     let host_addrs = find_addrs_outside_engine_area(&mut sim, 2);
     let requests = [(host_addrs[0], false), (host_addrs[1], true)];
@@ -616,7 +663,7 @@ fn sim_pim_host_together() {
     let completions = drain_until_completions(&mut sim, requests.len());
     assert_completions_carry_issue_times(&completions);
     tick_pim_program(&mut sim);
-    assert_vecadd_result(sim.engine_mut_for_test(cfg), 15);
+    assert_vecadd_result(&mut sim.engine_mut_for_test(cfg), 15);
 
     assert_completed_requests_match(&completions, &requests);
 }
@@ -632,7 +679,7 @@ fn sim_pim_host_concurrent() {
 
     let (_engine_addr, cfg) = find_addr_for_new_cgo_cfg(&mut sim, &[]);
     sim.add_engine_with_scheduling_for_test(cfg, EngineSchedulingMode::Host_CGO_share);
-    configure_vecadd(sim.engine_mut_for_test(cfg), 11, 13);
+    configure_vecadd(&mut sim.engine_mut_for_test(cfg), 11, 13);
 
     let host_addrs = find_addrs_inside_engine_area(&mut sim, 2);
     let requests = [(host_addrs[0], false), (host_addrs[1], true)];
@@ -648,7 +695,7 @@ fn sim_pim_host_concurrent() {
     let completions = drain_until_completions(&mut sim, requests.len());
     assert_completions_carry_issue_times(&completions);
     tick_pim_program(&mut sim);
-    assert_vecadd_result(sim.engine_mut_for_test(cfg), 24);
+    assert_vecadd_result(&mut sim.engine_mut_for_test(cfg), 24);
 
     assert_completed_requests_match(&completions, &requests);
 }
@@ -832,7 +879,8 @@ fn sim_broadcasts_encoded_request_and_returns_one_host_completion() {
     sim.add_engine_with_scheduling_for_test(cgo_cfg, EngineSchedulingMode::Host_CGO_share);
 
     for cfg in [first_cfg, second_cfg] {
-        let pe = sim.engine_mut_for_test(cfg).get_pe();
+        let mut engine = sim.engine_mut_for_test(cfg);
+        let pe = engine.get_pe();
         pe.get_Arf().write_vRF(1, [2; 8]);
         pe.get_Arf().write_vRF(2, [5; 8]);
     }
@@ -876,7 +924,8 @@ fn direct_pim_command_retires_without_host_completion() {
     };
     sim.add_engine_with_scheduling_for_test(cfg, EngineSchedulingMode::Host_FGO_share);
     {
-        let pe = sim.engine_mut_for_test(cfg).get_pe();
+        let mut engine = sim.engine_mut_for_test(cfg);
+        let pe = engine.get_pe();
         pe.get_Arf().write_vRF(1, [2; 8]);
         pe.get_Arf().write_vRF(2, [5; 8]);
     }
@@ -1379,7 +1428,7 @@ fn sim_CGO_host_together() {
     sim.add_engines(cfg);
     sim.set_engine_scheduling_mode(cfg, EngineSchedulingMode::Host_CGO_share)
         .unwrap();
-    configure_complex_cgo_program(sim.engine_mut_for_test(cfg));
+    configure_complex_cgo_program(&mut sim.engine_mut_for_test(cfg));
 
     let inside = find_addrs_inside_engine_area(&mut sim, 12);
     let outside = find_addrs_outside_engine_area(&mut sim, 12);
@@ -1399,11 +1448,12 @@ fn sim_CGO_host_together() {
     assert_completed_requests_match(&result.completions, &expected_host_requests(&requests));
 
     tick_pim_program(&mut sim);
-    let engine = sim.engine_mut_for_test(cfg);
-    assert_complex_cgo_result(engine);
+    let mut engine = sim.engine_mut_for_test(cfg);
+    assert_complex_cgo_result(&mut engine);
     assert!(engine.scheduler_was_invoked_for_test());
     assert!(engine.scheduler_entered_host_for_test());
     assert!(engine.scheduler_entered_pim_for_test());
+    drop(engine);
 
     // EqualExit must not strand later host accesses to the same pseudo-bank.
     // The Zephyr payload executes from engine 0's address range after polling
@@ -1438,7 +1488,8 @@ fn sim_FGO_host_together() {
         .unwrap();
 
     {
-        let pe = sim.engine_mut_for_test(cfg).get_pe();
+        let mut engine = sim.engine_mut_for_test(cfg);
+        let pe = engine.get_pe();
         pe.get_Arf().write_vRF(1, [20; 8]);
         pe.get_Arf().write_vRF(2, [3; 8]);
         pe.get_Arf().write_vRF(5, [100; 8]);
@@ -1497,7 +1548,7 @@ fn sim_FGO_host_together() {
     assert_completions_carry_issue_times(&result.completions);
     assert_completed_requests_match(&result.completions, &expected_host_requests(&requests));
 
-    let engine = sim.engine_mut_for_test(cfg);
+    let mut engine = sim.engine_mut_for_test(cfg);
     assert!(engine.scheduler_was_invoked_for_test());
     assert!(engine.scheduler_entered_host_for_test());
     assert!(engine.scheduler_entered_pim_for_test());

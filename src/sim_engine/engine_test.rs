@@ -23,8 +23,14 @@ impl Engine {
 
 #[test]
 fn boot_controller_is_guarded_by_processor_kind() {
-    assert!(Engine::new_cgo().cgo_boot.is_some());
-    assert!(Engine::new_fgo().cgo_boot.is_none());
+    let mut cgo = Engine::new_cgo();
+    assert!(cgo.cgo_boot.is_some());
+    assert_eq!(cgo.configured_toggle_latencies, (2, 2));
+    assert_eq!(cgo.dsim3.get_toggle_latencies(), (0, 0));
+
+    let mut fgo = Engine::new_fgo();
+    assert!(fgo.cgo_boot.is_none());
+    assert_eq!(fgo.dsim3.get_toggle_latencies(), (2, 2));
 }
 
 #[test]
@@ -228,6 +234,33 @@ fn dramsim3_wrapper_test() {
 
     assert!(success, "dsim3 wrapper failed to response to request");
     println!("dsim3 wrapper success to resposne to request");
+}
+
+fn cold_read_completion_cycles(toggle_on_cycles: i32, toggle_off_cycles: i32) -> u64 {
+    let mut dsim3 = dramsim3_wrapper::new(PIM_DSIM3_CFG_PATH, DSIM3_OUT_DIR, 0, 0, 0, 0);
+    dsim3.SetPimMode(true);
+    dsim3.set_toggle_latencies(toggle_on_cycles, toggle_off_cycles);
+    let mut req = dram_req::new(0, true, true);
+    req.set_id(dsim3.get_req_id());
+    req.set_issue_time(0);
+    dsim3.AddTransactionReq(req);
+
+    for cycle in 1..=10_000 {
+        if !dsim3.ClockTick().is_empty() {
+            return cycle;
+        }
+    }
+    panic!("cold DRAM read did not complete before timeout");
+}
+
+#[test]
+fn runtime_toggle_latencies_change_future_command_timing() {
+    let connected_cycles = cold_read_completion_cycles(0, 0);
+    let isolated_cycles = cold_read_completion_cycles(2, 2);
+    // Each zero-latency toggle still occupies its command issue cycle.  A
+    // configured latency of two therefore adds one extra cycle at TG_ON and
+    // one at TG_OFF relative to the connected state.
+    assert_eq!(isolated_cycles, connected_cycles + 2);
 }
 
 fn submit_dsim_request(dsim3: &mut dramsim3_wrapper, mut req: dram_req) {
@@ -481,6 +514,13 @@ fn assert_empty_cgo_switch_delay(mut engine: Engine, expected_delay: u64) {
     assert_eq!(stats.promoted_drain_cycles, 0);
     assert_eq!(stats.fixed_delay_cycles, expected_delay);
     assert_eq!(stats.commit_guard_cycles, 0);
+    assert_eq!(stats.synchronization_cycles, 0);
+    assert_eq!(stats.synchronization_min_cycles, 0);
+    assert_eq!(stats.synchronization_max_cycles, 0);
+    assert_eq!(stats.state_switch_cycles, expected_delay);
+    assert_eq!(stats.state_switch_min_cycles, expected_delay);
+    assert_eq!(stats.state_switch_max_cycles, expected_delay);
+    assert_eq!(stats.cancelled_handoff_cycles, 0);
     assert_eq!(stats.total_cycles(), expected_delay);
 }
 
@@ -555,6 +595,14 @@ fn cgo_switch_cancellation_unblocks_parked_dram_transactions() {
     assert_eq!(stats.requests, 1);
     assert_eq!(stats.commits, 0);
     assert_eq!(stats.cancellations, 1);
+    assert_eq!(
+        stats.cancelled_handoff_cycles,
+        stats.cancelled_synchronization_cycles + stats.cancelled_state_switch_cycles
+    );
+    assert_eq!(
+        stats.cancelled_handoff_cycles,
+        stats.synchronization_cycles + stats.state_switch_cycles
+    );
 }
 
 #[test]
@@ -832,6 +880,7 @@ fn cgo_start_gates_cpu_execution_and_equal_exit_marks_the_barrier() {
     use crate::sim_engine::engine_alloc::PIM_WORKING_SET_BASE_ENTRY;
 
     let mut engine = Engine::new_cgo();
+    assert_eq!(engine.dsim3.get_toggle_latencies(), (0, 0));
     engine
         .set_scheduling_mode(EngineSchedulingMode::CGO_only)
         .unwrap();
@@ -876,6 +925,7 @@ fn cgo_start_gates_cpu_execution_and_equal_exit_marks_the_barrier() {
         pim_cmd::CGO_Start,
     );
     engine.tick();
+    assert_eq!(engine.dsim3.get_toggle_latencies(), (2, 2));
     assert_eq!(
         engine
             .get_host_complete()
@@ -919,6 +969,7 @@ fn cgo_start_gates_cpu_execution_and_equal_exit_marks_the_barrier() {
     }
     assert_eq!(engine.get_cpu().get_RF().read_vregs(3), [7; 4]);
     assert!(engine.get_cpu().is_finished());
+    assert_eq!(engine.dsim3.get_toggle_latencies(), (0, 0));
     assert!(engine.reached_final_barrier());
 }
 

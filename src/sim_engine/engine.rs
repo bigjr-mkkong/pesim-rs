@@ -52,6 +52,15 @@ pub(crate) struct CgoSwitchDirectionStats {
     pub promoted_drain_cycles: u64,
     pub fixed_delay_cycles: u64,
     pub commit_guard_cycles: u64,
+    pub synchronization_cycles: u64,
+    pub synchronization_min_cycles: u64,
+    pub synchronization_max_cycles: u64,
+    pub state_switch_cycles: u64,
+    pub state_switch_min_cycles: u64,
+    pub state_switch_max_cycles: u64,
+    pub cancelled_synchronization_cycles: u64,
+    pub cancelled_state_switch_cycles: u64,
+    pub cancelled_handoff_cycles: u64,
     pub parked_transactions_total: u64,
     pub parked_transactions_max: u64,
     pub promoted_transactions_total: u64,
@@ -148,6 +157,9 @@ pub struct Engine {
     first_host_switch_started: bool,
     cgo_host_quantum_req_ids: HashSet<u64>,
     cgo_switch_stats: CgoSwitchStats,
+    active_switch_requested_cycle: u64,
+    active_switch_sync_cycles: u64,
+    active_switch_state_cycles: u64,
     //Following are F3FS scheduler internal variables
     fgo_request_state: FGO_RequestState,
     fgo_next_service: EngineMode,
@@ -157,6 +169,9 @@ pub struct Engine {
     switch_phase: SwitchPhase,
     switch_delay_remaining: u64,
     near_switch_cycles: u64,
+    configured_toggle_latencies: (i32, i32),
+    manages_cgo_toggle_latency: bool,
+    cgo_toggle_latency_active: bool,
     init_mirroring_enabled: bool,
     sequential_pim_requested: bool,
     // Test-only pin-out. This field and all writes to it are absent from production builds.
@@ -277,6 +292,15 @@ impl Engine {
         dsim3.SetPimMode(true);
         let near_switch_cycles = u64::try_from(dsim3.get_near_switch_latency())
             .expect("near-row switch latency must be non-negative");
+        let configured_toggle_latencies = dsim3.get_toggle_latencies();
+        let manages_cgo_toggle_latency =
+            matches!(&processor, EngineProcessor::CGO(_)) && dsim3.get_pim_switch_enabled();
+        if manages_cgo_toggle_latency {
+            // Initialization and idle host execution use a connected
+            // isolation transistor.  The configured TG penalties become
+            // active only after CGO launch.
+            dsim3.set_toggle_latencies(0, 0);
+        }
 
         Self {
             controller_id,
@@ -305,6 +329,9 @@ impl Engine {
             first_host_switch_started: false,
             cgo_host_quantum_req_ids: HashSet::new(),
             cgo_switch_stats: CgoSwitchStats::default(),
+            active_switch_requested_cycle: 0,
+            active_switch_sync_cycles: 0,
+            active_switch_state_cycles: 0,
             clock_cycle: 0,
             fgo_request_state: FGO_RequestState::Idle,
             fgo_next_service: EngineMode::PIM,
@@ -314,6 +341,9 @@ impl Engine {
             switch_phase: SwitchPhase::Idle,
             switch_delay_remaining: 0,
             near_switch_cycles,
+            configured_toggle_latencies,
+            manages_cgo_toggle_latency,
+            cgo_toggle_latency_active: false,
             init_mirroring_enabled: true,
             sequential_pim_requested: false,
             #[cfg(test)]
@@ -543,11 +573,15 @@ impl Engine {
                 self.switch_phase = SwitchPhase::SourceQuiescing;
                 self.switch_delay_remaining = 0;
                 self.active_cgo_switch_stats_mut().requests += 1;
+                self.active_switch_requested_cycle = self.clock_cycle;
+                self.active_switch_sync_cycles = 0;
+                self.active_switch_state_cycles = 0;
             }
             EngineMode::switch_delay => {
                 if self.switch_phase == SwitchPhase::SourceQuiescing {
                     if !self.cgo_source_quiesced() {
                         self.active_cgo_switch_stats_mut().source_quiesce_cycles += 1;
+                        self.active_switch_sync_cycles += 1;
                         self.next_mode = EngineMode::switch_delay;
                         return;
                     }
@@ -566,6 +600,7 @@ impl Engine {
                 if self.switch_phase == SwitchPhase::MemoryPausing {
                     if !self.dsim3.is_pause_ready() {
                         self.active_cgo_switch_stats_mut().promoted_drain_cycles += 1;
+                        self.active_switch_sync_cycles += 1;
                         self.next_mode = EngineMode::switch_delay;
                         return;
                     }
@@ -576,19 +611,42 @@ impl Engine {
                 if self.switch_delay_remaining > 0 {
                     self.switch_delay_remaining -= 1;
                     self.active_cgo_switch_stats_mut().fixed_delay_cycles += 1;
+                    self.active_switch_state_cycles += 1;
                     self.next_mode = EngineMode::switch_delay;
                     return;
                 }
 
                 if !self.dsim3.is_pause_ready() {
                     self.active_cgo_switch_stats_mut().commit_guard_cycles += 1;
+                    self.active_switch_state_cycles += 1;
                     self.next_mode = EngineMode::switch_delay;
                     return;
                 }
 
                 assert_eq!(self.switch_phase, SwitchPhase::NearRowSwitch);
                 self.switch_phase = SwitchPhase::Idle;
-                self.active_cgo_switch_stats_mut().commits += 1;
+                let sync_cycles = self.active_switch_sync_cycles;
+                let state_cycles = self.active_switch_state_cycles;
+                debug_assert!(self.clock_cycle >= self.active_switch_requested_cycle);
+                let stats = self.active_cgo_switch_stats_mut();
+                stats.commits += 1;
+                stats.synchronization_cycles += sync_cycles;
+                stats.synchronization_min_cycles = if stats.commits == 1 {
+                    sync_cycles
+                } else {
+                    stats.synchronization_min_cycles.min(sync_cycles)
+                };
+                stats.synchronization_max_cycles =
+                    stats.synchronization_max_cycles.max(sync_cycles);
+                stats.state_switch_cycles += state_cycles;
+                stats.state_switch_min_cycles = if stats.commits == 1 {
+                    state_cycles
+                } else {
+                    stats.state_switch_min_cycles.min(state_cycles)
+                };
+                stats.state_switch_max_cycles = stats.state_switch_max_cycles.max(state_cycles);
+                self.active_switch_sync_cycles = 0;
+                self.active_switch_state_cycles = 0;
                 match self.last_service_mode {
                     EngineMode::PIM => {
                         self.next_mode = EngineMode::HOST;
@@ -640,9 +698,21 @@ impl Engine {
         if self.dsim3.is_pause_requested() {
             self.dsim3.cancel_pause();
         }
-        self.active_cgo_switch_stats_mut().cancellations += 1;
+        let sync_cycles = self.active_switch_sync_cycles;
+        let state_cycles = self.active_switch_state_cycles;
+        let cancelled_cycles = sync_cycles + state_cycles;
+        debug_assert!(self.clock_cycle >= self.active_switch_requested_cycle);
+        let stats = self.active_cgo_switch_stats_mut();
+        stats.cancellations += 1;
+        stats.synchronization_cycles += sync_cycles;
+        stats.state_switch_cycles += state_cycles;
+        stats.cancelled_synchronization_cycles += sync_cycles;
+        stats.cancelled_state_switch_cycles += state_cycles;
+        stats.cancelled_handoff_cycles += cancelled_cycles;
         self.switch_phase = SwitchPhase::Idle;
         self.switch_delay_remaining = 0;
+        self.active_switch_sync_cycles = 0;
+        self.active_switch_state_cycles = 0;
     }
     fn force_pim_mode(&mut self) {
         self.cancel_cgo_switch();
@@ -1209,6 +1279,34 @@ impl Engine {
         }
     }
 
+    fn sync_cgo_toggle_latency(&mut self) {
+        if !self.manages_cgo_toggle_latency {
+            return;
+        }
+
+        let EngineProcessor::CGO(cpu) = &self.processor else {
+            unreachable!("CGO toggle-latency control requires a CGO processor");
+        };
+        let boot_active = !self
+            .cgo_boot
+            .as_ref()
+            .expect("CGO engine must own a boot controller")
+            .is_idle();
+        let should_be_active = (boot_active || cpu.is_started()) && !cpu.is_finished();
+        if should_be_active == self.cgo_toggle_latency_active {
+            return;
+        }
+
+        let (toggle_on_cycles, toggle_off_cycles) = if should_be_active {
+            self.configured_toggle_latencies
+        } else {
+            (0, 0)
+        };
+        self.dsim3
+            .set_toggle_latencies(toggle_on_cycles, toggle_off_cycles);
+        self.cgo_toggle_latency_active = should_be_active;
+    }
+
     fn tick_cgo_processor(&mut self) {
         let EngineProcessor::CGO(cpu) = &mut self.processor else {
             unreachable!("CGO scheduling requires a CGO processor");
@@ -1343,6 +1441,7 @@ impl Engine {
             }
         }
         self.process_cgo_cmds();
+        self.sync_cgo_toggle_latency();
         self.drain_current_port_to_dram();
 
         for req in self.dsim3.ClockTick() {

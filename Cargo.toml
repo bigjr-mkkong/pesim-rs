@@ -12,7 +12,6 @@ cxx = "1.0.194"
 rustc-hash = "2.1.2"
 heapless = "0.9.3"
 rand = "0.10.1"
-rayon = "1.10"
 
 [build-dependencies]
 cxx-build = "1.0.194"
